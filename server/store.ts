@@ -98,3 +98,17 @@ function persist(s: Session): void {
   fs.mkdirSync(ROOT, { recursive: true });
   fs.writeFileSync(path.join(ROOT, `${s.id}.json`), JSON.stringify(s, null, 2));
 }
+
+/**
+ * Deletes every trace of a session — the in-memory record, the event log, and
+ * any debrief already written. Used by "discard & exit" so an abandoned
+ * practice run leaves nothing behind.
+ */
+export function discardSession(id: string): void {
+  // Session ids are server-generated; reject anything that could escape ROOT.
+  if (!/^[\w.:-]+$/.test(id)) return;
+  sessions.delete(id);
+  for (const name of [`${id}.json`, `${id}-debrief.md`]) {
+    fs.rmSync(path.join(ROOT, name), { force: true });
+  }
+}

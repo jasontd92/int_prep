@@ -224,13 +224,21 @@ function renderArena() {
     class: "danger",
     onclick: () => { if (confirm("End the interview and get your debrief?")) void finishInterview("ended early by candidate"); },
   }, "End interview");
+  const discardBtn = h("button", {
+    title: "Exit without saving — deletes the session log, no debrief",
+    onclick: () => {
+      if (confirm("Discard this session?\n\nYour code, transcript, and session log are deleted. No debrief is generated. This can't be undone.")) {
+        void discardAndExit();
+      }
+    },
+  }, "Discard & exit");
 
   const topbar = h("div", { class: "topbar" },
     h("span", { class: "badge" }, S.track.toUpperCase()),
     h("span", { class: "badge" }, S.mode === "ai" ? "AI MODE" : "MANUAL"),
     timerEl, qTimerEl,
     h("div", { class: "spacer" }),
-    runBtn, nextBtn, ttsBtn, endBtn,
+    runBtn, nextBtn, ttsBtn, discardBtn, endBtn,
   );
 
   // ── left: tabs ──
@@ -580,6 +588,21 @@ function speak(text: string) {
 }
 
 // ── finish & debrief ────────────────────────────────────────────────────────
+
+/** Abandons the session: stops all timers and deletes the server-side record. */
+async function discardAndExit() {
+  S.ended = true; // stops the clock's auto-finish and any pending check-in
+  clearInterval(S.clockTimer);
+  clearTimeout(S.checkinTimer);
+  if (micEnabled) toggleMic();
+  speechSynthesis.cancel();
+  try {
+    await api("/api/session/discard", { sessionId: S.sessionId });
+  } catch {
+    // Leaving is what matters; a failed delete shouldn't trap the user here.
+  }
+  location.reload();
+}
 
 async function finishInterview(reason: string) {
   if (S.ended) return;

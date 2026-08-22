@@ -49,6 +49,8 @@ Pick a track, set the clock, choose questions (or take the default two), pick a 
 | 🔊 Voice | Interviewer speaks aloud |
 | Ask box | Ask the interviewer a clarifying question, as you would in a real round |
 | Next question → | Move on (the interviewer is told) |
+| End interview | Stop early and generate the debrief |
+| Discard & exit | Bail out with no record — deletes the session log, writes no debrief |
 
 **Narrate constantly.** The interviewer scores silence harshly and the debrief will call it out — which is the entire point of practicing here rather than in a text editor.
 
@@ -83,5 +85,7 @@ server/interviewer.ts  personas, prompt assembly, Claude CLI/SDK bridge
 server/store.ts        session event log + debrief persistence
 web/main.ts            editor, timers, voice, chat panels
 ```
+
+**Discard & exit** is for throwaway runs — a false start, a question you'd rather restart, or practice you don't want scored. It deletes the session's event log and any debrief from disk and drops you back at setup. It asks for confirmation first, and cancelling leaves the clock running.
 
 `sessions/` is gitignored — your transcripts stay local.

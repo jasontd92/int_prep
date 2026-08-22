@@ -11,6 +11,7 @@ import {
   getSession,
   addEvent,
   endSession,
+  discardSession,
   writeDebrief,
   type Mode,
 } from "./store";
@@ -72,6 +73,13 @@ async function handleApi(pathname: string, body: any): Promise<unknown> {
           return { id: q.id, title: q.title, type: q.type, est: q.est, prompt: q.prompt, starterCode: q.starterCode };
         }),
       };
+    }
+
+    case "/api/session/discard": {
+      const id = String(body.sessionId ?? "");
+      discardSession(id);
+      lastRunBySession.delete(id);
+      return { ok: true };
     }
 
     case "/api/run": {
