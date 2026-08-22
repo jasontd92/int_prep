@@ -1,0 +1,30 @@
+{
+  "name": "interview-arena",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Mock interview arena: Cursor FDE, OpenAI FDE, and classic DS&A tracks with an AI interviewer, timers, TS compiler, and voice narration.",
+  "type": "commonjs",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "arena": "node scripts/build.mjs && tsx server/index.ts",
+    "start": "npm run arena",
+    "typecheck": "tsc --noEmit",
+    "verify": "tsx scripts/verify-harnesses.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.65.0",
+    "@codemirror/commands": "^6.11.0",
+    "@codemirror/lang-javascript": "^6.2.2",
+    "@codemirror/state": "^6.7.1",
+    "@codemirror/theme-one-dark": "^6.1.2",
+    "@codemirror/view": "^6.43.9",
+    "codemirror": "^6.0.1",
+    "esbuild": "^0.24.0",
+    "marked": "^15.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0"
+  }
+}
