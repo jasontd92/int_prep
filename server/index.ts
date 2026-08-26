@@ -4,7 +4,7 @@
 import * as http from "node:http";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { TRACKS, QUESTIONS, questionsForTrack, type Track } from "./questions";
+import { TRACKS, QUESTIONS, questionsForTrack, portfolioQuestion, type Track } from "./questions";
 import { runCode, type RunResult } from "./runner";
 import {
   createSession,
@@ -12,15 +12,21 @@ import {
   addEvent,
   endSession,
   discardSession,
+  setPortfolioResearch,
   writeDebrief,
   type Mode,
 } from "./store";
 import { buildPrompt, buildAssistantPrompt, callAgent, type AskKind } from "./interviewer";
+import { researchFeature } from "./research";
+import { repoName, slugify } from "./memory";
 
 const PORT = Number(process.env.ARENA_PORT || 4321);
 const ROOT = path.join(__dirname, "..");
 
 const lastRunBySession = new Map<string, RunResult>();
+// In-flight background research per portfolio session, so the final debrief can
+// await ground truth before grading.
+const researchBySession = new Map<string, Promise<void>>();
 
 const server = http.createServer(async (req, res) => {
   try {
@@ -59,6 +65,9 @@ async function handleApi(pathname: string, body: any): Promise<unknown> {
       const mode = body.mode as Mode;
       const durationMin = clamp(Number(body.durationMin) || 60, 10, 180);
       const checkinMin = clamp(Number(body.checkinMin) || 7, 3, 20);
+
+      if (track === "portfolio") return startPortfolio(body, durationMin, checkinMin);
+
       let questionIds: string[] = Array.isArray(body.questionIds) ? body.questionIds : [];
       questionIds = questionIds.filter((id) => QUESTIONS.get(id)?.track === track);
       if (questionIds.length === 0) {
@@ -73,6 +82,12 @@ async function handleApi(pathname: string, body: any): Promise<unknown> {
           return { id: q.id, title: q.title, type: q.type, est: q.est, prompt: q.prompt, starterCode: q.starterCode };
         }),
       };
+    }
+
+    case "/api/portfolio/status": {
+      const session = getSession(String(body.sessionId ?? ""));
+      const p = session?.portfolio;
+      return { status: p?.researchStatus ?? "pending", error: p?.researchError ?? null, savedTo: p?.savedTo ?? null };
     }
 
     case "/api/session/discard": {
@@ -117,6 +132,10 @@ async function handleApi(pathname: string, body: any): Promise<unknown> {
       if (typeof code === "string" && code) {
         addEvent(sessionId, { t: Number(t) || 0, type: "snapshot", questionId, data: { code } });
       }
+      // Portfolio final grading needs ground truth — wait for research to land.
+      if (kind === "final" && session.track === "portfolio") {
+        await researchBySession.get(sessionId)?.catch(() => {});
+      }
       const prompt = buildPrompt({
         session,
         kind: kind as AskKind,
@@ -133,7 +152,9 @@ async function handleApi(pathname: string, body: any): Promise<unknown> {
       if (kind === "final") {
         endSession(sessionId);
         const file = writeDebrief(sessionId, text);
-        return { text, savedTo: path.relative(ROOT, file) };
+        // Portfolio: reveal the ground truth alongside the debrief (study aid).
+        const groundTruth = session.track === "portfolio" ? session.portfolio?.groundTruth ?? "" : undefined;
+        return { text, savedTo: path.relative(ROOT, file), groundTruth };
       }
       return { text };
     }
@@ -156,6 +177,55 @@ async function handleApi(pathname: string, body: any): Promise<unknown> {
     default:
       throw new Error(`unknown endpoint ${pathname}`);
   }
+}
+
+// ── portfolio-defense track ──────────────────────────────────────────────────
+
+function startPortfolio(body: any, durationMin: number, checkinMin: number): unknown {
+  const repoPath = String(body.repoPath ?? "").trim();
+  const featureName = String(body.featureName ?? "").trim();
+  if (!repoPath) throw new Error("a repo path is required for the portfolio track");
+  if (!featureName) throw new Error("name the feature you want to defend");
+  if (!fs.existsSync(repoPath) || !fs.statSync(repoPath).isDirectory()) {
+    throw new Error(`repo path not found or not a directory: ${repoPath}`);
+  }
+
+  const q = portfolioQuestion(repoPath, featureName);
+  const session = createSession("portfolio", "manual", durationMin, checkinMin, [q.id], {
+    repoPath,
+    repoName: repoName(repoPath),
+    featureName,
+    featureSlug: slugify(featureName),
+    researchStatus: "pending",
+  });
+
+  // Kick off research in the background — cache-first, so usually near-instant.
+  const job = (async () => {
+    try {
+      const r = await researchFeature(repoPath, featureName);
+      setPortfolioResearch(session.id, {
+        groundTruth: r.groundTruth,
+        researchStatus: r.status === "error" ? "error" : r.status,
+        researchError: r.error,
+        savedTo: r.savedTo,
+      });
+      const type = r.status === "hit" ? "research-hit" : r.status === "error" ? "research-error" : "research-refresh";
+      addEvent(session.id, { t: 0, type, questionId: q.id, data: { status: r.status, savedTo: r.savedTo, error: r.error ?? null } });
+      if (r.groundTruth) addEvent(session.id, { t: 0, type: "ground-truth", questionId: q.id, data: { body: r.groundTruth } });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setPortfolioResearch(session.id, { researchStatus: "error", researchError: msg });
+      addEvent(session.id, { t: 0, type: "research-error", questionId: q.id, data: { error: msg } });
+    }
+  })();
+  researchBySession.set(session.id, job);
+
+  return {
+    sessionId: session.id,
+    questionIds: [q.id],
+    portfolio: { repoName: session.portfolio!.repoName, featureName },
+    questions: [{ id: q.id, title: q.title, type: q.type, est: q.est, prompt: q.prompt, starterCode: q.starterCode }],
+  };
 }
 
 // ── plumbing ────────────────────────────────────────────────────────────────

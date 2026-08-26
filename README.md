@@ -18,6 +18,7 @@ npm run arena      # → http://localhost:4321
 | Cursor FDE | 11 | Merkle diff, text buffers, Tab prediction, monorepo indexing, streaming edits, apply models, eval strategy, agent harnesses, context-window economics, inference cost, the work-trial meta-question |
 | OpenAI FDE | 7 | Token-bucket limiter, retry/backoff, cost attribution, enterprise RAG with ACLs, LLM gateway, a "the model got worse" escalation, one-week POC scoping |
 | Classic DS&A | 10 | Two Sum, valid parens, merge intervals, LRU cache, binary-search bounds, sliding window, linked lists, islands, top-K, topological sort |
+| Portfolio Defense | *your repos* | Defend a feature **you** built against the actual code — architecture, tradeoffs, decisions. See below. |
 
 The Cursor set is drawn from [ombharatiya/AI-Engineer-Interview-Questions](https://github.com/ombharatiya/AI-Engineer-Interview-Questions/blob/main/14-company-interview-questions/cursor-anysphere.md) — including the reported work-trial format and the "AI tools allowed, with scoped-query expectations" wrinkle.
 
@@ -34,6 +35,27 @@ The Cursor set is drawn from [ombharatiya/AI-Engineer-Interview-Questions](https
 **Voice.** Speech-to-text narration (Web Speech API — Chrome works best) streams your spoken reasoning into the transcript, so the interviewer reacts to what you *said*, not just what you typed. Text-to-speech reads the interviewer's messages aloud. Prefer typing? There's a narration box next to the mic button.
 
 **The debrief.** At the end you get a markdown scorecard: 1–4 scores across problem solving, code quality, communication, time management (plus AI direction in AI mode), each cell citing specific moments from your transcript — then what went well, prioritized fixes, and 3–5 targeted drills. It's saved to `sessions/<id>-debrief.md` alongside the full JSON event log.
+
+---
+
+## Portfolio Defense — defend your own architecture against the code
+
+A different kind of round: instead of a canned problem, you defend a feature **you actually built**, and the interviewer grades your account against the real implementation. It's an A/B — you explain from memory while a research agent reads the code — so vagueness and misremembering get caught.
+
+**How it works.** At setup, pick the *Portfolio Defense* track, give a **repo path on your machine** and the **feature to defend** ("the caching layer", "auth token refresh"). On start:
+
+1. A **research agent** — `claude -p` run *inside that repo* with a **read-only** tool set (Read/Grep/Glob/LS, nothing that can modify the code) — locates and reads the implementation and writes a ground-truth technical summary.
+2. The interviewer opens the defense and, using that ground truth as hidden notes, probes your spoken account: when you state a decision it asks what it cost; when you're inaccurate it pushes back **without handing you the answer**.
+3. The debrief scores **Accuracy vs. the actual code**, **Tradeoff reasoning & depth**, **Communication**, and **Intellectual honesty**, with a **Corrections** section ("you said X → the code actually does Y"). The agent's ground-truth writeup is then **revealed** below the debrief as a study aid.
+
+**The memory cache.** Research findings persist as markdown "memory files" under a sibling directory — `~/.interview-arena/memory/<repo-name>/<feature-slug>.md` (override with `ARENA_MEMORY_DIR`). Each file carries the technical summary, key file pointers, and tradeoffs, plus frontmatter recording the repo HEAD sha and the git blob sha of every key file. That frontmatter is a real cache:
+
+- **Repeat a question on an unchanged feature → instant.** One `git rev-parse` confirms the writeup is still current; the agent never re-runs.
+- **Smart invalidation.** If HEAD moved but no file backing *this* feature changed, it stays fresh. Only when a key file actually changed (committed *or* uncommitted in your working tree) does it re-research — warm-started from the old writeup. Non-git repos fall back to a 14-day TTL.
+
+So practicing the same feature repeatedly is cheap; the agent only pays to re-read when your code has genuinely moved.
+
+**Requirements.** Portfolio Defense needs the `claude` CLI (the research agent uses its tools — the SDK path has no filesystem access). The memory files are yours to read; nothing about your repos is committed to this project.
 
 ---
 
@@ -79,9 +101,11 @@ npm run build       # bundle the frontend
 **Adding a question**: append to `Q` in `server/questions.ts` (`prompt` is what the candidate sees, `interviewerNotes` is hidden and shapes the agent's hints, `harness` defines `__harnessMain` using `__check`/`__checkSet`), add a reference solution to `scripts/verify-harnesses.ts`, and run `npm run verify`.
 
 ```
-server/questions.ts    question bank + hidden interviewer notes
+server/questions.ts    question bank + hidden interviewer notes + portfolio synthetic Q
 server/runner.ts       tsc typecheck + sandboxed execution
-server/interviewer.ts  personas, prompt assembly, Claude CLI/SDK bridge
+server/interviewer.ts  personas (incl. portfolio judge), prompt assembly, Claude CLI/SDK bridge
+server/research.ts     read-only research agent (the A/B "B" side)
+server/memory.ts       memory-file cache + git-sha invalidation
 server/store.ts        session event log + debrief persistence
 web/main.ts            editor, timers, voice, chat panels
 ```

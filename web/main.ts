@@ -69,6 +69,11 @@ const S = {
   checkinTimer: 0 as unknown as ReturnType<typeof setTimeout>,
   clockTimer: 0 as unknown as ReturnType<typeof setInterval>,
   questionStartMs: 0,
+  // portfolio-defense track
+  portfolioRepo: "",
+  portfolioFeature: "",
+  researchStatus: "pending" as "pending" | "hit" | "refreshed" | "created" | "error",
+  researchTimer: 0 as unknown as ReturnType<typeof setInterval>,
 };
 
 const now = () => Date.now() - S.startMs;
@@ -111,7 +116,7 @@ async function showSetup() {
             selTrack = t;
             checked.clear();
             for (const id of t.defaultPick) checked.add(id);
-            renderTracks(); renderQuestions();
+            renderTracks(); renderQuestions(); updateTrackUI();
           },
         }, h("h3", {}, t.name), h("p", {}, t.blurb))
       );
@@ -130,23 +135,56 @@ async function showSetup() {
     modeBtns.push(b);
     modeWrap.append(b);
   }
+  const modeLabel = h("label", {}, "Mode", modeWrap);
+
+  // Portfolio-defense config (repo + feature), shown only for that track.
+  const repoInput = h("input", { placeholder: "/absolute/path/to/your/repo", style: "width:340px" }) as HTMLInputElement;
+  const featureInput = h("input", { placeholder: 'e.g. "the caching layer" or "auth token refresh"', style: "width:340px" }) as HTMLInputElement;
+  const portfolioForm = h("div", { class: "qlist", style: "display:none" },
+    h("div", { class: "hint", style: "margin:0 0 10px" },
+      "Defend a feature you built. A research agent reads the actual code in this repo (read-only), caches its findings in a memory file under ~/.interview-arena/memory/, and the interviewer grades your spoken defense against it. Ground truth is revealed after you answer."),
+    h("label", { style: "display:flex;flex-direction:column;gap:6px;margin-bottom:12px" }, "Repo path (on this machine)", repoInput),
+    h("label", { style: "display:flex;flex-direction:column;gap:6px" }, "Feature to defend", featureInput),
+  );
+
+  function updateTrackUI() {
+    const isPortfolio = selTrack.id === "portfolio";
+    qlist.style.display = isPortfolio ? "none" : "";
+    portfolioForm.style.display = isPortfolio ? "" : "none";
+    modeLabel.style.display = isPortfolio ? "none" : "";
+    startBtn.textContent = isPortfolio ? "Start defense" : "Start interview";
+  }
 
   const startBtn = h("button", {
     class: "primary", style: "font-size:15px;padding:10px 28px",
     onclick: async () => {
-      startBtn.textContent = "Starting…";
+      const isPortfolio = selTrack.id === "portfolio";
+      if (isPortfolio && (!repoInput.value.trim() || !featureInput.value.trim())) {
+        alert("Enter both a repo path and the feature you want to defend.");
+        return;
+      }
+      const label = startBtn.textContent;
+      startBtn.textContent = isPortfolio ? "Researching…" : "Starting…";
       (startBtn as HTMLButtonElement).disabled = true;
       try {
-        await startSession(selTrack.id, mode, Number(durationInput.value), Number(checkinInput.value), [...checked]);
+        await startSession({
+          track: selTrack.id,
+          mode,
+          durationMin: Number(durationInput.value),
+          checkinMin: Number(checkinInput.value),
+          questionIds: [...checked],
+          repoPath: isPortfolio ? repoInput.value.trim() : undefined,
+          featureName: isPortfolio ? featureInput.value.trim() : undefined,
+        });
       } catch (e) {
         alert(String(e));
-        startBtn.textContent = "Start interview";
+        startBtn.textContent = label;
         (startBtn as HTMLButtonElement).disabled = false;
       }
     },
-  }, "Start interview");
+  }, "Start interview") as HTMLButtonElement;
 
-  renderTracks(); renderQuestions();
+  renderTracks(); renderQuestions(); updateTrackUI();
   app.append(
     h("div", { class: "setup" },
       h("h1", {}, "Interview Arena"),
@@ -155,9 +193,10 @@ async function showSetup() {
       h("div", { class: "setup-row" },
         h("label", {}, "Duration (minutes)", durationInput),
         h("label", {}, "Interviewer check-in every (minutes)", checkinInput),
-        h("label", {}, "Mode", modeWrap),
+        modeLabel,
       ),
       qlist,
+      portfolioForm,
       startBtn,
       h("div", { class: "hint" },
         "Voice narration uses your browser's speech recognition (best in Chrome — you'll be asked for mic permission). ",
@@ -181,16 +220,25 @@ let tabBtns: Record<string, HTMLButtonElement> = {};
 let tabPanels: Record<string, HTMLElement> = {};
 let promptEl: HTMLElement;
 let qNavEl: HTMLElement;
+let researchBadge: HTMLElement | null = null;
 
-async function startSession(track: string, mode: "ai" | "manual", durationMin: number, checkinMin: number, questionIds: string[]) {
-  const res = await api<{ sessionId: string; questions: SessionQuestion[] }>("/api/session/start", {
-    track, mode, durationMin, checkinMin, questionIds,
-  });
+interface StartOpts {
+  track: string;
+  mode: "ai" | "manual";
+  durationMin: number;
+  checkinMin: number;
+  questionIds: string[];
+  repoPath?: string;
+  featureName?: string;
+}
+
+async function startSession(opts: StartOpts) {
+  const res = await api<{ sessionId: string; questions: SessionQuestion[] }>("/api/session/start", opts);
   S.sessionId = res.sessionId;
-  S.track = track;
-  S.mode = mode;
-  S.durationMin = durationMin;
-  S.checkinMin = Math.max(3, Math.min(20, checkinMin || 7));
+  S.track = opts.track;
+  S.mode = opts.mode;
+  S.durationMin = opts.durationMin;
+  S.checkinMin = Math.max(3, Math.min(20, opts.checkinMin || 7));
   S.questions = res.questions;
   S.current = 0;
   S.code = Object.fromEntries(res.questions.map((q) => [q.id, q.starterCode]));
@@ -199,16 +247,21 @@ async function startSession(track: string, mode: "ai" | "manual", durationMin: n
   S.narrationBuffer = [];
   S.assistantHistory = [];
   S.ended = false;
+  S.portfolioRepo = opts.repoPath ?? "";
+  S.portfolioFeature = opts.featureName ?? "";
+  S.researchStatus = "pending";
 
   renderArena();
   startClock();
   scheduleCheckin();
+  if (opts.track === "portfolio") startResearchPolling();
   void contactInterviewer("kickoff");
 }
 
 function renderArena() {
   app.innerHTML = "";
   tabBtns = {}; tabPanels = {};
+  const isPortfolio = S.track === "portfolio";
 
   // ── topbar ──
   timerEl = h("div", { class: "timer" }, "--:--");
@@ -222,23 +275,34 @@ function renderArena() {
   }, "🔊 Voice");
   const endBtn = h("button", {
     class: "danger",
-    onclick: () => { if (confirm("End the interview and get your debrief?")) void finishInterview("ended early by candidate"); },
-  }, "End interview");
+    onclick: () => { if (confirm(isPortfolio ? "End the defense and get your debrief?" : "End the interview and get your debrief?")) void finishInterview("ended early by candidate"); },
+  }, isPortfolio ? "End defense" : "End interview");
   const discardBtn = h("button", {
     title: "Exit without saving — deletes the session log, no debrief",
     onclick: () => {
-      if (confirm("Discard this session?\n\nYour code, transcript, and session log are deleted. No debrief is generated. This can't be undone.")) {
+      if (confirm("Discard this session?\n\nYour transcript and session log are deleted. No debrief is generated. This can't be undone.")) {
         void discardAndExit();
       }
     },
   }, "Discard & exit");
 
+  const badges: (Node | string)[] = isPortfolio
+    ? [
+        h("span", { class: "badge" }, "PORTFOLIO"),
+        h("span", { class: "badge", title: S.portfolioRepo }, `${S.portfolioRepo.split("/").filter(Boolean).pop() || "repo"} · ${S.portfolioFeature}`),
+        (researchBadge = h("span", { class: "badge", title: "The research agent is reading the code" }, "◐ researching…")),
+      ]
+    : [
+        h("span", { class: "badge" }, S.track.toUpperCase()),
+        h("span", { class: "badge" }, S.mode === "ai" ? "AI MODE" : "MANUAL"),
+      ];
+
   const topbar = h("div", { class: "topbar" },
-    h("span", { class: "badge" }, S.track.toUpperCase()),
-    h("span", { class: "badge" }, S.mode === "ai" ? "AI MODE" : "MANUAL"),
+    ...badges,
     timerEl, qTimerEl,
     h("div", { class: "spacer" }),
-    runBtn, nextBtn, ttsBtn, discardBtn, endBtn,
+    ...(isPortfolio ? [] : [runBtn, nextBtn]),
+    ttsBtn, discardBtn, endBtn,
   );
 
   // ── left: tabs ──
@@ -279,10 +343,11 @@ function renderArena() {
     tabPanels["Assistant"].append(h("div", { class: "chat-input", style: "position:sticky;bottom:-16px;margin:16px -16px -16px" }, aInput, aSend));
   }
 
-  // ── right: editor + output ──
+  // ── right: editor (+ output for coding tracks) ──
   const editorWrap = h("div", { class: "editor-wrap" });
   outputEl = h("div", { class: "output" }, h("span", { class: "dim" }, "Output and test results appear here. ⌘/Ctrl+Enter to run."));
-  const right = h("div", { class: "right" }, editorWrap, outputEl);
+  // Portfolio: the editor is a scratch/notes pad; there's nothing to run.
+  const right = h("div", { class: "right" }, editorWrap, ...(isPortfolio ? [] : [outputEl]));
 
   // ── narration bar ──
   liveEl = h("div", { class: "live" }, "Mic off — enable to practice narrating out loud, or type notes on the right.");
@@ -376,6 +441,7 @@ function nextQuestion() {
 // ── run code ────────────────────────────────────────────────────────────────
 
 async function runCurrent() {
+  if (S.track === "portfolio") return; // notes pad — nothing to compile/run
   const q = curQ();
   outputEl.innerHTML = "";
   outputEl.append(h("span", { class: "dim" }, "Compiling with tsc…"));
@@ -589,11 +655,31 @@ function speak(text: string) {
 
 // ── finish & debrief ────────────────────────────────────────────────────────
 
+// Poll research status so the topbar badge reflects cache hit / refresh / error.
+function startResearchPolling() {
+  const tick = async () => {
+    try {
+      const s = await api<{ status: string; error: string | null }>("/api/portfolio/status", { sessionId: S.sessionId });
+      S.researchStatus = s.status as typeof S.researchStatus;
+      if (researchBadge) {
+        if (s.status === "hit") researchBadge.textContent = "✓ ground truth ready (cached)";
+        else if (s.status === "refreshed" || s.status === "created") researchBadge.textContent = "✓ ground truth ready";
+        else if (s.status === "error") { researchBadge.textContent = "⚠ research failed"; researchBadge.title = s.error ?? ""; }
+        else researchBadge.textContent = "◐ researching…";
+      }
+      if (s.status !== "pending") clearInterval(S.researchTimer);
+    } catch { /* transient; keep polling */ }
+  };
+  S.researchTimer = setInterval(() => void tick(), 2500);
+  void tick();
+}
+
 /** Abandons the session: stops all timers and deletes the server-side record. */
 async function discardAndExit() {
   S.ended = true; // stops the clock's auto-finish and any pending check-in
   clearInterval(S.clockTimer);
   clearTimeout(S.checkinTimer);
+  clearInterval(S.researchTimer);
   if (micEnabled) toggleMic();
   speechSynthesis.cancel();
   try {
@@ -609,17 +695,21 @@ async function finishInterview(reason: string) {
   S.ended = true;
   clearInterval(S.clockTimer);
   clearTimeout(S.checkinTimer);
+  clearInterval(S.researchTimer);
   if (micEnabled) toggleMic();
   speechSynthesis.cancel();
 
+  const isPortfolio = S.track === "portfolio";
   app.innerHTML = "";
   const wrap = h("div", { class: "debrief" },
-    h("h1", {}, "Interview over"),
-    h("p", { class: "dim" }, `(${reason}) The interviewer is writing your debrief — scoring the transcript, code, and test results…`));
+    h("h1", {}, isPortfolio ? "Defense over" : "Interview over"),
+    h("p", { class: "dim" }, isPortfolio
+      ? `(${reason}) Grading your defense against the code — waiting on the research agent if it's still reading…`
+      : `(${reason}) The interviewer is writing your debrief — scoring the transcript, code, and test results…`));
   app.append(wrap);
 
   try {
-    const res = await api<{ text: string; savedTo?: string }>("/api/interviewer", {
+    const res = await api<{ text: string; savedTo?: string; groundTruth?: string }>("/api/interviewer", {
       sessionId: S.sessionId,
       kind: "final",
       questionId: curQ().id,
@@ -631,6 +721,17 @@ async function finishInterview(reason: string) {
     });
     wrap.innerHTML = marked.parse(res.text) as string;
     if (res.savedTo) wrap.append(h("div", { class: "saved" }, `Saved to ${res.savedTo} (full session log alongside it).`));
+
+    // Portfolio: reveal the agent's ground-truth writeup as a study aid.
+    if (isPortfolio && res.groundTruth) {
+      const body = h("div", { class: "qprompt", style: "display:none;margin-top:12px;padding:16px;border:1px solid var(--border);border-radius:10px;background:var(--panel)" });
+      body.innerHTML = marked.parse(res.groundTruth) as string;
+      const toggle = h("button", { style: "margin-top:20px",
+        onclick: () => { const open = body.style.display !== "none"; body.style.display = open ? "none" : "block"; toggle.textContent = open ? "▸ Reveal ground truth (what the code actually does)" : "▾ Hide ground truth"; },
+      }, "▸ Reveal ground truth (what the code actually does)");
+      wrap.append(h("div", { style: "margin-top:8px" }, toggle), body);
+    }
+
     wrap.append(h("div", { style: "margin-top:24px" },
       h("button", { class: "primary", onclick: () => location.reload() }, "New session")));
   } catch (e) {

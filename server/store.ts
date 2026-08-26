@@ -20,9 +20,24 @@ export interface SessionEvent {
     | "assistant-prompt" // AI-mode: candidate's prompt to the pair assistant
     | "assistant-reply"
     | "question-switch"
+    | "research-hit" // portfolio: served fresh from the memory cache
+    | "research-refresh" // portfolio: cache stale/missing, agent re-researched
+    | "research-error" // portfolio: research failed
+    | "ground-truth" // portfolio: the researched writeup (revealed after answering)
     | "end";
   questionId?: string;
   data: Record<string, unknown>;
+}
+
+export interface PortfolioConfig {
+  repoPath: string;
+  repoName: string;
+  featureName: string;
+  featureSlug: string;
+  groundTruth?: string; // filled once research completes
+  researchStatus?: "pending" | "hit" | "refreshed" | "created" | "error";
+  researchError?: string;
+  savedTo?: string; // memory file path
 }
 
 export interface Session {
@@ -36,6 +51,7 @@ export interface Session {
   events: SessionEvent[];
   code: Record<string, string>; // latest code per question
   ended: boolean;
+  portfolio?: PortfolioConfig; // set only for the portfolio-defense track
 }
 
 const ROOT = path.join(__dirname, "..", "sessions");
@@ -46,7 +62,8 @@ export function createSession(
   mode: Mode,
   durationMin: number,
   checkinMin: number,
-  questionIds: string[]
+  questionIds: string[],
+  portfolio?: PortfolioConfig
 ): Session {
   const id = new Date().toISOString().replace(/[:.]/g, "-") + "-" + track;
   const s: Session = {
@@ -60,10 +77,22 @@ export function createSession(
     events: [{ t: 0, type: "start", data: { track, mode, durationMin, checkinMin, questionIds } }],
     code: {},
     ended: false,
+    portfolio,
   };
   sessions.set(id, s);
   persist(s);
   return s;
+}
+
+/** Records the outcome of background research on a portfolio session. */
+export function setPortfolioResearch(
+  id: string,
+  patch: Partial<PortfolioConfig>
+): void {
+  const s = sessions.get(id);
+  if (!s || !s.portfolio) return;
+  s.portfolio = { ...s.portfolio, ...patch };
+  persist(s);
 }
 
 export function getSession(id: string): Session | undefined {

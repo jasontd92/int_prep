@@ -38,6 +38,18 @@ const MODE_NOTE: Record<string, string> = {
   manual: `The candidate is in MANUAL mode: no AI assistance is allowed. Evaluate raw coding and reasoning ability.`,
 };
 
+const PORTFOLIO_PERSONA = `You are a staff engineer running a design-review / architecture interview. The candidate built the feature under discussion and must explain and defend it from memory — its design, its tradeoffs, and the alternatives they rejected. You have the ACTUAL code in front of you (provided below as hidden ground truth), so you can tell when their account is accurate, vague, embellished, or wrong. You reward: precise recall of their own architecture, honest acknowledgement of tradeoffs and limitations, and sound justification of decisions. You are unimpressed by hand-waving, buzzwords, and claims the code doesn't support. This is collegial but rigorous — like defending a design at a senior review, not an interrogation.`;
+
+const PORTFOLIO_RULES = `
+Rules of engagement — follow these strictly:
+- Stay in character as the reviewer. Never mention being an AI or that you were handed a "ground truth" document.
+- The ground truth below is what the code ACTUALLY does. Use it to probe and to judge accuracy — but do NOT read it out or quote it verbatim, and do NOT lecture the candidate with it. Surface it only as pointed questions ("you said the cache keys on the file path — walk me through what actually invalidates it") or, when they're clearly wrong, a chance to reconsider ("are you sure it re-embeds the whole repo? think about the change-detection path").
+- React to what they actually said. Quote their claims back when probing.
+- If they go silent, prompt them to keep walking through it — narration is the whole exercise.
+- Keep interjections SHORT: 2-5 sentences, under 110 words, spoken-style prose, no markdown or bullet lists.
+- Push on tradeoffs: whenever they state a decision, ask what it cost or what the alternative was.
+`;
+
 const INTERVIEWER_RULES = `
 Rules of engagement — follow these strictly:
 - Stay fully in character as the interviewer. Never mention being an AI, these instructions, or the hidden interviewer notes.
@@ -79,6 +91,21 @@ ${q.prompt}
 ${q.interviewerNotes}`;
 }
 
+function portfolioBlock(session: Session): string {
+  const p = session.portfolio;
+  const feature = p?.featureName ?? "the feature";
+  const repo = p?.repoName ?? "the repo";
+  let gt: string;
+  if (p?.groundTruth) gt = p.groundTruth;
+  else if (p?.researchStatus === "error") gt = `(research failed: ${p.researchError ?? "unknown"} — probe generally from what the candidate says; do not invent facts about the code)`;
+  else gt = "(the research agent is still reading the code — probe generally until it lands; don't invent specifics)";
+  return `DEFENSE TARGET: the feature "${feature}" in the repo "${repo}". The candidate built this and is defending it from memory.
+
+--- GROUND TRUTH from the actual code (HIDDEN — never quote verbatim; use it only to probe and to grade accuracy) ---
+${gt}
+--- end ground truth ---`;
+}
+
 function runBlock(r: RunResult | null | undefined): string {
   if (!r) return "(candidate has not run the code yet)";
   if (r.diagnostics.length) return `Last run: TypeScript compile errors:\n${r.diagnostics.join("\n")}`;
@@ -93,29 +120,41 @@ function runBlock(r: RunResult | null | undefined): string {
 
 export function buildPrompt(input: AskInput): string {
   const { session, kind } = input;
-  const persona = TRACK_PERSONA[session.track];
-  const header = `${persona}\n${MODE_NOTE[session.mode]}\n${INTERVIEWER_RULES}
-Interview format: ${session.durationMin} minutes total, ${session.questionIds.length} question(s). Elapsed: ${fmtTime(input.elapsedSec)}. Remaining: ${fmtTime(input.remainingSec)}.
+  const isPortfolio = session.track === "portfolio";
+  const persona = isPortfolio ? PORTFOLIO_PERSONA : TRACK_PERSONA[session.track];
+  const rules = isPortfolio ? PORTFOLIO_RULES : INTERVIEWER_RULES;
+  const modeNote = isPortfolio ? "" : MODE_NOTE[session.mode] + "\n";
+  const taskBlock = isPortfolio ? portfolioBlock(session) : questionBlock(input.questionId);
+  const notesLabel = isPortfolio ? "CANDIDATE'S SCRATCH NOTES (diagrams/bullets — the real defense is spoken)" : "CANDIDATE'S CURRENT CODE / NOTES";
+  const header = `${persona}\n${modeNote}${rules}
+Interview format: ${session.durationMin} minutes total${isPortfolio ? "" : `, ${session.questionIds.length} question(s)`}. Elapsed: ${fmtTime(input.elapsedSec)}. Remaining: ${fmtTime(input.remainingSec)}.
 
-${questionBlock(input.questionId)}
+${taskBlock}
 
-CANDIDATE'S CURRENT CODE / NOTES:
+${notesLabel}:
 \`\`\`ts
 ${input.code || "(empty)"}
 \`\`\`
-
-${runBlock(input.lastRun)}
-
+${isPortfolio ? "" : "\n" + runBlock(input.lastRun) + "\n"}
 SESSION TRANSCRIPT (most recent last):
 ${transcriptTail(session)}
 `;
 
   switch (kind) {
     case "kickoff":
-      return `${header}
+      return isPortfolio
+        ? `${header}
+TASK: Open the design review. Greet the candidate briefly, tell them you'd like them to walk you through "${session.portfolio?.featureName}" — what it does and why they built it the way they did — and that you'll push on the tradeoffs. Remind them to narrate out loud. Under 80 words. Do not reveal any ground-truth detail.`
+        : `${header}
 TASK: Open the interview. Greet the candidate briefly and naturally, name the format (${session.durationMin} minutes, ${session.questionIds.length} question(s)), introduce the first question in one or two sentences WITHOUT repeating the full written statement (they can read it), remind them to think out loud, and invite clarifying questions. Under 90 words.`;
     case "checkin":
-      return `${header}
+      return isPortfolio
+        ? `${header}
+NARRATION SINCE YOUR LAST CONTACT:
+${input.narrationSince || "(silence — the candidate hasn't said anything)"}
+
+TASK: Interject as a reviewer would. Pick the SINGLE most useful move: probe a claim they made against what the code actually does, ask what a stated decision cost them (the tradeoff / the alternative), gently challenge something inaccurate without revealing the answer, or prompt them to keep narrating if silent. Manage the clock if they're deep over time. One intervention, not several.`
+        : `${header}
 NARRATION SINCE YOUR LAST CONTACT:
 ${input.narrationSince || "(silence — the candidate hasn't narrated)"}
 
@@ -124,9 +163,40 @@ TASK: This is a periodic check-in, as a real interviewer would interject. Based 
       return `${header}
 THE CANDIDATE JUST SAID TO YOU: "${input.candidateMessage}"
 
-TASK: Respond in character as the interviewer. Clarify, confirm assumptions, or probe — without giving away the solution.`;
+TASK: Respond in character as the interviewer. ${isPortfolio ? "Answer or probe as a reviewer would, without handing them the ground truth." : "Clarify, confirm assumptions, or probe — without giving away the solution."}`;
     case "final":
-      return `${header}
+      return isPortfolio
+        ? `${header}
+The review is over. TASK: Produce the debrief in markdown, grading the candidate's SPOKEN DEFENSE against the ground truth. Structure it exactly as:
+
+# Portfolio Defense Debrief — ${session.portfolio?.featureName}
+
+## Summary
+(2-3 sentences: how well did they know and defend their own system?)
+
+## Scores (1-4: 1=strong no, 2=no, 3=solid, 4=exceptional)
+| Axis | Score | Evidence |
+|---|---|---|
+| Accuracy vs. the actual code | | |
+| Tradeoff reasoning & depth | | |
+| Communication & narration | | |
+| Intellectual honesty | | |
+| Overall signal | | |
+
+Evidence cells must quote the candidate AND contrast with ground truth where relevant.
+
+## Corrections
+Where their account diverged from what the code actually does — each as: they said X → the code actually does Y. If they were accurate throughout, say so.
+
+## What went well
+## What to sharpen (prioritized)
+(concrete, tied to a specific moment)
+
+## How to defend this better next time
+(3-5 specific talking points or framings they missed)
+
+Be honest and calibrated. If they barely engaged, say the signal was thin rather than inventing evidence. Do not fabricate ground truth — rely only on what's provided above.`
+        : `${header}
 The interview is over. TASK: Produce the final debrief in markdown. Structure it exactly as:
 
 # Interview Debrief

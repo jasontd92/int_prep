@@ -3,8 +3,10 @@
 // (14-company-interview-questions/cursor-anysphere.md); OpenAI FDE and DSA
 // tracks curated from public interview reports and classic question sets.
 
-export type Track = "cursor" | "openai" | "dsa";
-export type QuestionType = "coding" | "design" | "scenario";
+import { slugify, repoName } from "./memory";
+
+export type Track = "cursor" | "openai" | "dsa" | "portfolio";
+export type QuestionType = "coding" | "design" | "scenario" | "defense";
 
 export interface Question {
   id: string;
@@ -56,7 +58,44 @@ export const TRACKS: TrackInfo[] = [
       "The canon: arrays, hashing, intervals, linked lists, BFS/DFS, heaps, binary search, caches. Best practiced in manual mode with full narration.",
     defaultPick: ["dsa-lru-cache", "dsa-merge-intervals"],
   },
+  {
+    id: "portfolio",
+    name: "Portfolio Defense (your repos)",
+    blurb:
+      "Defend a feature YOU built. Name a repo and a feature; a research agent reads the actual code (cached in memory files) and the interviewer grades your verbal defense against ground truth — accuracy, tradeoff depth, and honesty.",
+    defaultPick: [],
+  },
 ];
+
+/**
+ * Builds the synthetic "question" for a portfolio-defense session. Unlike the
+ * static tracks, the prompt is generated from the named feature; ground truth
+ * comes from the research agent, not from hand-written interviewer notes.
+ */
+export function portfolioQuestion(
+  repoPath: string,
+  featureName: string
+): { id: string; title: string; type: QuestionType; est: number; prompt: string; starterCode: string } {
+  const slug = slugify(featureName);
+  const repo = repoName(repoPath);
+  return {
+    id: `defend:${slug}`,
+    title: `Defend: ${featureName}`,
+    type: "defense",
+    est: 20,
+    prompt: `**Portfolio defense — \`${repo}\`**
+
+Walk me through **${featureName}** — what it does, how you built it, and the key architecture decisions behind it. I have the code in front of me, so be precise: I'll push on anything that doesn't match what's actually there.
+
+Then defend your choices. Why this design over the alternatives? What did you optimize for, and what did you trade away? What would you do differently now?
+
+Use the notes panel on the right for diagrams, component lists, or bullet points — but the defense itself is spoken, so **narrate out loud**.`,
+    starterCode: `// Scratch space — sketch the architecture of "${featureName}", list its
+// components, jot the tradeoffs you want to hit. You're defending it out loud;
+// this panel is just for diagrams and notes.
+`,
+  };
+}
 
 const Q: Question[] = [
   // ────────────────────────── CURSOR TRACK ──────────────────────────
