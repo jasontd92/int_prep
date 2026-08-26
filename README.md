@@ -32,7 +32,15 @@ The Cursor set is drawn from [ombharatiya/AI-Engineer-Interview-Questions](https
 
 **Timers and check-ins.** Set duration and check-in cadence at setup (default: 60 minutes, every 7). The interviewer interjects on that schedule the way a real one does — acknowledging progress, probing complexity, dropping *one* hint if you're stuck, prompting you when you go silent, or warning you that you're over budget on question one. The clock turns amber at 5 minutes and red at 2; hitting zero ends the interview and triggers the debrief.
 
-**Voice.** Speech-to-text narration (Web Speech API — Chrome works best) streams your spoken reasoning into the transcript, so the interviewer reacts to what you *said*, not just what you typed. Text-to-speech reads the interviewer's messages aloud. Prefer typing? There's a narration box next to the mic button.
+**Voice.** Speech-to-text narration (Web Speech API — Chrome works best) streams your spoken reasoning into the transcript, so the interviewer reacts to what you *said*, not just what you typed. Text-to-speech reads the interviewer's messages aloud, through a **voice picker** in the topbar next to the 🔊 button. Prefer typing? There's a narration box next to the mic button.
+
+**Using macOS Enhanced / Premium / Siri voices for the interviewer.** The default system voice sounds robotic; macOS ships far more natural ones, but they must be *downloaded* before any browser can see them:
+
+1. **System Settings › Accessibility › Spoken Content › System Voice › Manage Voices** (the ⓘ / "Manage Voices…" button).
+2. Download an **Enhanced** or **Premium** English voice (e.g. *Ava (Premium)*, *Zoe (Premium)*), or a **Siri** voice. Premium ≈ several hundred MB each and are the most natural.
+3. Reload the arena and pick that voice in the topbar dropdown — it previews as you select. The app auto-defaults to the most natural voice it finds (Premium/Enhanced/Siri/Neural first) and remembers your choice.
+
+**Browser matters for which voices appear:** **Safari** exposes the full macOS set including Enhanced/Premium/Siri — use it for the best interviewer voice. Chrome only exposes a subset (its own Google voices plus some system voices) and often hides the Premium ones. So: Chrome for the most reliable *speech-to-text*, Safari for the most natural *interviewer voice* — pick per what you're practicing, or run STT by typing and use Safari for great TTS.
 
 **The debrief.** At the end you get a markdown scorecard: 1–4 scores across problem solving, code quality, communication, time management (plus AI direction in AI mode), each cell citing specific moments from your transcript — then what went well, prioritized fixes, and 3–5 targeted drills. It's saved to `sessions/<id>-debrief.md` alongside the full JSON event log.
 

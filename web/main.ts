@@ -302,7 +302,7 @@ function renderArena() {
     timerEl, qTimerEl,
     h("div", { class: "spacer" }),
     ...(isPortfolio ? [] : [runBtn, nextBtn]),
-    ttsBtn, discardBtn, endBtn,
+    ttsBtn, buildVoiceSelect(), discardBtn, endBtn,
   );
 
   // ── left: tabs ──
@@ -644,13 +644,86 @@ function recordNarration(text: string) {
   }).catch(() => {});
 }
 
+// ── interviewer TTS voice selection ──────────────────────────────────────────
+// macOS "Enhanced"/"Premium"/Siri voices, once downloaded in System Settings,
+// show up in speechSynthesis.getVoices() (best exposed in Safari). We pick the
+// most natural available English voice by default and let the user override.
+
+let ttsVoices: SpeechSynthesisVoice[] = [];
+let selectedVoiceURI = "";
+try { selectedVoiceURI = localStorage.getItem("arena.voiceURI") || ""; } catch { /* private mode */ }
+
+// Higher score = more natural. Enhanced/Premium/Siri/Neural voices win.
+function voiceScore(v: SpeechSynthesisVoice): number {
+  const n = v.name.toLowerCase();
+  let s = 0;
+  if (!v.lang.toLowerCase().startsWith("en")) s -= 100;
+  if (/premium|enhanced/.test(n)) s += 50;
+  if (/siri/.test(n)) s += 45;
+  if (/natural|neural/.test(n)) s += 40;
+  if (v.localService) s += 10; // on-device, no network lag/robotic fallback
+  if (/google/.test(n)) s += 15; // Chrome's Google voices are decent
+  if (/eloquence|compact|novelty|bells|bad news|zarvox|albert/.test(n)) s -= 30; // legacy joke/robotic
+  if (v.lang === "en-US" || v.lang === "en_US") s += 5;
+  return s;
+}
+
+function refreshVoices() {
+  const v = speechSynthesis.getVoices();
+  if (v.length) ttsVoices = v;
+  if (!selectedVoiceURI && ttsVoices.length) {
+    const best = [...ttsVoices].sort((a, b) => voiceScore(b) - voiceScore(a))[0];
+    selectedVoiceURI = best?.voiceURI || "";
+  }
+  if (voiceSelectEl) populateVoiceSelect();
+}
+
+function currentVoice(): SpeechSynthesisVoice | undefined {
+  return ttsVoices.find((v) => v.voiceURI === selectedVoiceURI);
+}
+
 function speak(text: string) {
   try {
     speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text.replace(/[*_`#]/g, ""));
-    u.rate = 1.05;
+    u.rate = 1.02;
+    const v = currentVoice();
+    if (v) { u.voice = v; u.lang = v.lang; }
     speechSynthesis.speak(u);
   } catch { /* tts unavailable */ }
+}
+
+let voiceSelectEl: HTMLSelectElement | null = null;
+function populateVoiceSelect() {
+  if (!voiceSelectEl) return;
+  const ranked = [...ttsVoices]
+    .filter((v) => v.lang.toLowerCase().startsWith("en"))
+    .sort((a, b) => voiceScore(b) - voiceScore(a));
+  const list = ranked.length ? ranked : ttsVoices;
+  voiceSelectEl.innerHTML = "";
+  if (!list.length) {
+    voiceSelectEl.append(h("option", { value: "" }, "default voice"));
+    return;
+  }
+  for (const v of list) {
+    const opt = h("option", { value: v.voiceURI }, `${v.name}${v.lang ? " · " + v.lang : ""}`) as HTMLOptionElement;
+    if (v.voiceURI === selectedVoiceURI) opt.selected = true;
+    voiceSelectEl.append(opt);
+  }
+}
+
+function buildVoiceSelect(): HTMLSelectElement {
+  voiceSelectEl = h("select", {
+    title: "Interviewer voice — macOS Enhanced/Premium/Siri voices appear here once downloaded (System Settings › Accessibility › Spoken Content › Manage Voices). Best exposed in Safari.",
+    style: "max-width:190px",
+    onchange: () => {
+      selectedVoiceURI = voiceSelectEl!.value;
+      try { localStorage.setItem("arena.voiceURI", selectedVoiceURI); } catch { /* private mode */ }
+      speak("This is the interviewer voice."); // preview on change
+    },
+  }) as HTMLSelectElement;
+  populateVoiceSelect();
+  return voiceSelectEl;
 }
 
 // ── finish & debrief ────────────────────────────────────────────────────────
@@ -742,5 +815,11 @@ async function finishInterview(reason: string) {
 }
 
 // ── boot ────────────────────────────────────────────────────────────────────
+
+// Voices load asynchronously in some browsers (Chrome fires voiceschanged).
+if (typeof speechSynthesis !== "undefined") {
+  refreshVoices();
+  speechSynthesis.addEventListener?.("voiceschanged", refreshVoices);
+}
 
 void showSetup();
