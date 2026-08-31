@@ -5,7 +5,7 @@
 
 import { slugify, repoName } from "./memory";
 
-export type Track = "cursor" | "openai" | "dsa" | "portfolio";
+export type Track = "cursor" | "openai" | "dsa" | "systems" | "redo" | "portfolio";
 export type QuestionType = "coding" | "design" | "scenario" | "defense";
 
 export interface Question {
@@ -15,6 +15,12 @@ export interface Question {
   title: string;
   /** Suggested minutes for this question. */
   est: number;
+  /**
+   * When true, the code editor is optional practice scaffolding, not the graded
+   * deliverable — the interviewer and debrief evaluate reasoning/approach and
+   * treat any code as supporting evidence. Used for whiteboard-style rounds.
+   */
+  codeOptional?: boolean;
   /** Markdown shown to the candidate. */
   prompt: string;
   /** Hidden notes for the interviewer agent: what good looks like, hint ladder. */
@@ -26,6 +32,16 @@ export interface Question {
    * __check(name, got, want) / __checkSet / __results (provided by the runner prelude).
    */
   harness?: string;
+  /** Optional plain-JavaScript starter, shown when the candidate picks JavaScript. */
+  starterCodeJs?: string;
+  /** Optional Python starter, shown when the candidate picks Python. */
+  starterCodePy?: string;
+  /**
+   * Python test harness. Must define `def __harness_main():` and use the
+   * __check / __checkSet helpers from the Python prelude. Present only for
+   * questions that support Python.
+   */
+  harnessPy?: string;
 }
 
 export interface TrackInfo {
@@ -57,6 +73,20 @@ export const TRACKS: TrackInfo[] = [
     blurb:
       "The canon: arrays, hashing, intervals, linked lists, BFS/DFS, heaps, binary search, caches. Best practiced in manual mode with full narration.",
     defaultPick: ["dsa-lru-cache", "dsa-merge-intervals"],
+  },
+  {
+    id: "systems",
+    name: "Classic Systems Design (SWE)",
+    blurb:
+      "Design real backend systems from scratch — API, data model, consistency, concurrency, failure handling, and scale. Classical software-engineering design rounds (not AI/LLM-specific). Best in manual mode with full narration.",
+    defaultPick: ["systems-url-shortener", "systems-news-feed"],
+  },
+  {
+    id: "redo",
+    name: "Redo (Senior SWE) — real question bank",
+    blurb:
+      "The actually-reported Redo on-site questions: a stubbed Othello CLI game (Section 1), plus the whiteboard graph/memoization/tree problems (Section 2) — LC 105, LC 2328, and bishop-BFS. Practice in Manual mode (no AI tooling in their first round). For Section 3 AI-product design use the OpenAI/Cursor tracks; for Section 4 use Portfolio Defense (Software Engineer).",
+    defaultPick: ["redo-othello", "redo-build-tree"],
   },
   {
     id: "portfolio",
@@ -1135,6 +1165,611 @@ async function __harnessMain(): Promise<void> {
   for (let i = 1; i < 5000; i++) edges.push([i, i - 1]);
   __check("long chain 5000", canFinish(5000, edges), true);
 }
+`,
+  },
+
+  // ────────────────────── CLASSIC SYSTEMS DESIGN (SWE) ──────────────────────
+  // Discussion rounds: design a real backend from scratch. No test harness —
+  // the editor is a whiteboard. Best practiced in manual mode with narration.
+  {
+    id: "systems-url-shortener",
+    track: "systems",
+    type: "design",
+    title: "Design a URL shortener (TinyURL / bit.ly)",
+    est: 35,
+    prompt: `Design the backend for a URL shortener: users submit a long URL and get back a short code; visiting the short link redirects to the original.
+
+Drive the design end to end:
+- **Requirements** — clarify functional (custom aliases? expiry? analytics?) and non-functional (read:write ratio, latency, availability) before designing.
+- **API** — define the create and redirect endpoints (shapes, status codes).
+- **Short-code generation** — how do you produce short, unique codes? Compare approaches (hash+truncate, counter+base62, random) and their collision/coordination tradeoffs.
+- **Data model & storage** — schema, choice of store, and why.
+- **Redirect path** — make it fast (caching), and decide 301 vs 302 (and what that costs you in analytics).
+- **Scale & failure** — back-of-envelope for storage/QPS; what breaks first and how you'd shard.
+
+Sketch API shapes and the schema in the editor. Narrate your reasoning and tradeoffs out loud.`,
+    interviewerNotes: `Canonical warm-up systems-design question — tests whether they clarify first, design a clean API/schema, and reason about the ID-generation tradeoff. Strong answers: nail read-heavy profile (reads >> writes) and cache the redirect (short_code -> long_url) hot path; ID generation via a counter + base62 (needs a distributed counter / ranges, e.g. per-node blocks or a ticket server) OR random 7-char base62 with collision-retry (discuss birthday-collision math), and can articulate why hash+truncate risks collisions and is deterministic (dup URLs collapse — pro or con); KV or relational store keyed on short_code, low write amplification; 302 (temporary) to preserve analytics vs 301 (cacheable, faster, but browsers cache and you lose click counts); sharding by short_code hash; expiry via TTL. Hint ladder: (1) "what's the read/write ratio, and what does that imply?" (2) "how do you guarantee codes are unique without a central bottleneck?" (3) "301 vs 302 — what does each cost you?" Red flags: jumping to architecture before requirements; ignoring collisions; no caching on the redirect path.`,
+    starterCode: `// Whiteboard — API shapes, schema, ID-generation approach, cache plan.
+// POST /shorten { url, alias? } -> { shortCode }
+// GET  /:code -> 302 Location: <longUrl>
+// table links(short_code PK, long_url, created_at, expires_at?, clicks)
+`,
+  },
+  {
+    id: "systems-news-feed",
+    track: "systems",
+    type: "design",
+    title: "Design a social news feed / timeline",
+    est: 40,
+    prompt: `Design the backend for a home feed: each user sees a timeline of posts from accounts they follow, newest-relevant first.
+
+Cover:
+- **Requirements** — clarifying questions (chronological vs ranked? how fresh? follower-count distribution?).
+- **API** — get-feed (pagination), create-post.
+- **Data model** — users, follows, posts, and how the feed is assembled.
+- **The core decision: fanout-on-write vs fanout-on-read** — precompute each user's feed on post, or assemble at read time? Discuss the tradeoff and where each wins.
+- **The celebrity / hot-key problem** — a user with 10M followers breaks naive fanout-on-write. How do you handle it (hybrid)?
+- **Ranking, caching, pagination** (stable cursors, not offset), and how you keep it fast.
+
+Sketch the write path and read path. Narrate the tradeoffs.`,
+    interviewerNotes: `Classic feed design — the signal is the fanout tradeoff and the celebrity hybrid. Strong answers: fanout-on-write (push) precomputes per-follower feed lists (fast reads, expensive/wasteful writes, bad for celebrities & inactive users) vs fanout-on-read (pull) assembles at query time (cheap writes, expensive reads, bad for users following many); the real answer is HYBRID — push for normal accounts, pull for celebrities/high-fanout, merge at read time; feed stored as a capped list of post-ids in a fast store (Redis) per user; cursor-based pagination (post_id/timestamp cursor, not OFFSET) for stability; ranking as a later layer over the candidate set; cache hot feeds, backfill inactive users lazily. Bonus: dedupe, handling unfollow/delete (tombstones or read-time filter). Hint ladder: (1) "walk me through what happens when a user with 10M followers posts" (2) "would you precompute feeds or build them on read — what does each cost?" (3) "how do you paginate so items don't shift when new posts arrive?" Red flags: OFFSET pagination; single fanout strategy with no celebrity handling; no read/write ratio reasoning.`,
+    starterCode: `// Whiteboard — write path vs read path, feed storage, fanout strategy.
+// GET /feed?cursor=... -> { posts[], nextCursor }
+// POST /posts { text } -> fanout...
+// follows(follower_id, followee_id) ; feeds: per-user list of post_ids (capped)
+`,
+  },
+  {
+    id: "systems-chat",
+    track: "systems",
+    type: "design",
+    title: "Design a real-time chat / messaging system",
+    est: 40,
+    prompt: `Design a 1:1 and group messaging backend (think WhatsApp / Slack DMs): messages deliver in near-real-time, survive offline recipients, and arrive in order.
+
+Cover:
+- **Requirements** — 1:1 vs groups, delivery/read receipts, offline delivery, history retention.
+- **Connection layer** — how clients receive messages in real time (WebSocket/long-poll), and how you route a message to the right connection across many servers.
+- **Data model & ordering** — how messages are stored and how you guarantee per-conversation ordering.
+- **Delivery semantics** — at-least-once vs exactly-once, dedup (client message IDs), and the sent/delivered/read state machine.
+- **Offline & fanout** — recipient offline: how does the message wait and get delivered on reconnect? Group fanout.
+- **Scale** — presence, connection state, and what shards by what.
+
+Sketch the message flow and schema. Narrate tradeoffs.`,
+    interviewerNotes: `Tests connection routing, ordering, and delivery semantics. Strong answers: persistent connections (WebSocket) terminated by gateway servers; a way to find which gateway holds a user's connection (session registry / pub-sub by user_id, e.g. Redis) so a message from server A reaches recipient on server B; messages persisted first (durability) then pushed — inbox/mailbox model so offline users get messages on reconnect (pull unacked since last-seen cursor); per-conversation ordering via a monotonic sequence number issued per conversation (not global); at-least-once delivery + client-generated message IDs for idempotent dedup; state machine sent->delivered->read via acks; group = fan out to members' inboxes. Bonus: presence via heartbeats + TTL, push notifications for offline, message history pagination. Hint ladder: (1) "server A receives a message for a user connected to server B — how does it get there?" (2) "how do you guarantee messages show in the same order for everyone in a conversation?" (3) "recipient is offline — walk me through send then reconnect." Red flags: assuming one server holds all connections; global ordering; no persistence before delivery; ignoring dedup.`,
+    starterCode: `// Whiteboard — connection/gateway layer, routing, message store, ordering.
+// clients <-WS-> gateways -> message service -> store + fanout to inboxes
+// messages(conv_id, seq, sender_id, body, ts, client_msg_id)
+`,
+  },
+  {
+    id: "systems-notifications",
+    track: "systems",
+    type: "design",
+    title: "Design a notification / fan-out service",
+    est: 35,
+    prompt: `Design a service that other systems call to notify users across channels (push, email, SMS, in-app). It must absorb bursts, not double-send, and respect user preferences.
+
+Cover:
+- **API** — how producers enqueue a notification (single + fan-out to many users).
+- **Pipeline** — decoupling producers from delivery (queues/workers), and per-channel adapters.
+- **Reliability** — retries with backoff, dead-letter handling, and **idempotency / dedup** so a retried or duplicate request doesn't notify twice.
+- **User preferences & rate limiting** — opt-outs, quiet hours, per-user caps, digesting.
+- **Scale & isolation** — bursty producers, a slow channel (e.g. email provider) not blocking others, priority.
+- **Observability** — how you know a notification was actually delivered.
+
+Sketch the pipeline and data model. Narrate tradeoffs.`,
+    interviewerNotes: `Tests async pipeline design, idempotency, and failure handling. Strong answers: producers write to a durable queue; workers pull and dispatch to per-channel adapters (push/email/SMS/in-app), each isolated so one slow/broken provider doesn't back up others (separate queues per channel/priority); at-least-once processing + idempotency keys (dedup on producer-supplied notification id within a window) to avoid double-send; retries with exponential backoff and a dead-letter queue for poison messages; preference service checked before send (opt-out, quiet hours, frequency caps, digest batching); templating/localization; delivery tracking via provider callbacks/webhooks -> status store. Bonus: fan-out (one event -> many users) done in a fan-out worker to keep the API fast; priority lanes (OTP vs marketing). Hint ladder: (1) "a producer retries the same request — how do you avoid notifying twice?" (2) "the email provider is down for an hour — what happens to push notifications?" (3) "how do you enforce 'no more than 5 marketing pushes a day'?" Red flags: synchronous send in the API call; no dedup; single queue for all channels; no DLQ.`,
+    starterCode: `// Whiteboard — API, queues/workers, channel adapters, idempotency, prefs.
+// POST /notify { userId(s), template, data, idempotencyKey, channel? , priority }
+// producer -> queue -> fanout worker -> per-channel queues -> adapters -> providers
+`,
+  },
+  {
+    id: "systems-booking",
+    track: "systems",
+    type: "design",
+    title: "Design a booking system (no double-booking)",
+    est: 40,
+    prompt: `Design a reservation/booking backend — seats, rooms, or appointment slots — where a finite inventory must never be double-booked, even under heavy concurrent demand (think concert tickets or restaurant tables).
+
+Cover:
+- **Requirements** — hold/checkout flow? temporary reservations? overselling tolerance?
+- **API** — search availability, hold, confirm, cancel.
+- **Data model** — inventory, holds, bookings.
+- **The core problem: concurrency** — two users try to grab the last seat at the same instant. How do you guarantee exactly one wins? Compare approaches (DB transaction + row lock / SELECT … FOR UPDATE, optimistic concurrency with version check, conditional update, distributed lock) and their tradeoffs.
+- **Holds & expiry** — reserve a seat for N minutes during checkout, then release if abandoned. How do you implement expiry reliably?
+- **Idempotency & payments** — confirm is called twice (double-click / retry) — no double charge, no double booking.
+- **Scale** — hot events (everyone hits one show at 10am).
+
+Sketch the schema and the critical section. Narrate tradeoffs.`,
+    interviewerNotes: `The best pure-SWE systems question here — it's really about correctness under concurrency, not just scale. Strong answers: model the atomic decrement as a single transactional step — either SELECT ... FOR UPDATE on the inventory row then decrement, or a conditional UPDATE (UPDATE inventory SET remaining = remaining - 1 WHERE id = ? AND remaining > 0) and check rows-affected, or optimistic concurrency (version column, retry on conflict); the invariant is that the availability check and the decrement happen atomically — never check-then-act with a gap; temporary holds as rows with expires_at, and expiry handled by (a) a sweeper job releasing expired holds AND/OR (b) treating availability as active-holds-aware at query time (don't rely on the sweeper alone); idempotency keys on confirm so retries/double-clicks don't double-book or double-charge; payment as a separate step with the hold guaranteeing the seat during checkout; for hot events, per-seat/section contention mitigation (queue/waiting room, shard inventory, in-memory reservation service backed by durable store). Hint ladder: (1) "two requests for the last seat arrive at the same millisecond — how does exactly one win?" (2) "where exactly is the critical section, and what's protecting it?" (3) "the user starts checkout but never pays — how does the seat come back?" Red flags: check-availability-then-book as two separate steps (TOCTOU race); relying only on a cron to free holds; no idempotency on confirm; app-level locking that doesn't survive multiple servers.`,
+    starterCode: `// Whiteboard — schema, the atomic reserve step, holds/expiry, idempotency.
+// POST /hold { slotId, userId, idemKey } -> { holdId, expiresAt }
+// POST /confirm { holdId, paymentToken, idemKey }
+// inventory(slot_id, remaining, version) ; holds(id, slot_id, user_id, expires_at, status)
+`,
+  },
+  {
+    id: "systems-kv-store",
+    track: "systems",
+    type: "design",
+    title: "Design a distributed key-value store / cache",
+    est: 40,
+    prompt: `Design a distributed key-value store (or a distributed cache like a self-hosted Redis) that scales beyond one machine and survives node failures.
+
+Cover:
+- **API & semantics** — get/put/delete; what consistency do you promise (strong vs eventual)?
+- **Partitioning** — how keys map to nodes. Why is naive \`hash(key) % N\` bad when N changes, and what fixes it (consistent hashing / hash ring, virtual nodes)?
+- **Replication** — how many copies, and how writes/reads use them (quorum: R + W > N). CAP tradeoff under partition.
+- **Failure handling** — node down, node added: how does data move (rebalancing), and how do replicas reconcile (read-repair, hinted handoff, vector clocks / last-write-wins)?
+- **Cache specifics (if framed as a cache)** — eviction (LRU/LFU/TTL), and cache-aside vs write-through.
+
+Sketch the ring and the read/write paths. Narrate the consistency tradeoffs.`,
+    interviewerNotes: `Tests distributed-systems fundamentals: partitioning, replication, consistency. Strong answers: consistent hashing with virtual nodes so adding/removing a node only remaps ~1/N of keys (vs modulo remapping nearly everything); replication factor N with tunable quorums — W + R > N gives read-your-writes / strong-ish consistency, smaller W/R gives availability & speed (Dynamo-style); explicit CAP stance under partition (AP with eventual consistency + conflict resolution, or CP refusing writes); conflict handling via last-write-wins (needs synced clocks, can lose data) vs vector clocks / version vectors (accurate causality, more complex) + read-repair and hinted handoff for transient failures; rebalancing moves only affected ranges. For cache framing: eviction policies (LRU via hashmap+DLL, LFU, TTL), cache-aside vs write-through/back, thundering-herd/stampede protection (locks, request coalescing), and hot-key mitigation. Hint ladder: (1) "you add a 5th node to 4 — how much data moves, and how do you keep it small?" (2) "how do you stay available during a network partition, and what do you give up?" (3) "two clients write the same key on different replicas — how do you reconcile?" Red flags: hash % N; single-leader with no failover story; claiming both strong consistency and full availability under partition.`,
+    starterCode: `// Whiteboard — hash ring, replication/quorum, failure & reconciliation.
+// get(k) / put(k, v) ; ring of virtual nodes; N replicas; R + W > N
+// conflict resolution: LWW vs vector clocks ; read-repair, hinted handoff
+`,
+  },
+  {
+    id: "systems-rate-limiter",
+    track: "systems",
+    type: "design",
+    title: "Design a distributed rate limiter",
+    est: 35,
+    prompt: `Design a rate limiter that caps each client (API key / user / IP) to N requests per window, enforced consistently across a **fleet** of API servers (not just one process).
+
+Cover:
+- **Requirements** — per-key limits, the window semantics, and what happens on limit (reject 429 vs queue).
+- **Algorithm** — compare fixed window, sliding window (log & counter), token bucket, leaky bucket; which you'd pick and why (burstiness, boundary spikes, memory).
+- **Distribution** — the limit is global but requests hit many servers. Where does the counter live so all servers agree (centralized store like Redis, atomic increments/Lua), and how do you keep that fast?
+- **Failure & tradeoffs** — the counter store is slow or down: fail open or closed? Local approximation vs strict global accuracy.
+- **Details** — clock/window boundaries, key cardinality, response headers (limit/remaining/reset).
+
+Sketch the check path and data. Narrate tradeoffs.`,
+    interviewerNotes: `Tests algorithm choice + the distributed-counter problem. Strong answers: token bucket (smooths bursts, simple, common) or sliding-window counter (avoids fixed-window's 2x boundary burst by weighting the previous window); fixed window is simplest but allows edge spikes; sliding-window log is exact but memory-heavy; the crux is the SHARED counter — a central store (Redis) with atomic INCR/EXPIRE or a Lua script/token-bucket done atomically so concurrent servers don't race; latency mitigation via local token buckets that sync/lease from the central store (approximate but fast) — name the accuracy-vs-latency tradeoff; on store failure decide fail-open (availability, risk abuse) vs fail-closed (safety, risk outage) and justify; per-key TTLs to bound memory; return standard headers. Hint ladder: (1) "fixed-window counter — what happens right at the window boundary?" (2) "ten servers each hold their own counter — how do you enforce a global limit?" (3) "Redis is down — do you allow or block traffic, and why?" Red flags: per-process in-memory counter presented as global; ignoring atomicity (read-then-write race); no failure stance.`,
+    starterCode: `// Whiteboard — algorithm, shared counter, atomicity, failure mode.
+// allow(key): bool  // check + decrement atomically
+// central store: INCR key + EXPIRE, or token-bucket via Lua ; optional local lease
+`,
+  },
+
+  // ─────────────────────── REDO (Senior SWE) — real bank ────────────────────
+  // The actual reported Redo on-site questions, mapped to the invite's sections.
+  // Section 1 = a stubbed CLI game (Othello); Section 2 = whiteboard graph /
+  // memoization / tree-traversal problems. No fabricated e-commerce prompts.
+  {
+    id: "redo-othello",
+    track: "redo",
+    type: "coding",
+    title: "Section 1 — Othello / Reversi (CLI game logic)",
+    est: 60,
+    codeOptional: true,
+    prompt: `**Redo Section 1 simulation.** On the real on-site you get a *stubbed CLI game* and 90 minutes to complete as much functionality as possible (your machine, your IDE, Cursor allowed). Redo has used **Othello/Reversi** before. Here you implement the game's core logic; the tests grade functionality, just like the real round.
+
+### Rules of Othello (Reversi)
+
+Two players — **Black (\`"B"\`)** and **White (\`"W"\`)** — alternate turns on an 8×8 board.
+
+- **Setup.** Four discs start in the center: \`(3,3)=W\`, \`(3,4)=B\`, \`(4,3)=B\`, \`(4,4)=W\` (row, col; 0-indexed). **Black moves first.**
+- **A legal move** places one of your discs on an **empty** square so that it *outflanks* opponent discs: in at least one of the **8 directions** (horizontal, vertical, or diagonal) there must be an unbroken line of **one or more** opponent discs, starting on the square adjacent to where you place, and ending at one of **your own** discs. A move that outflanks nothing is **not legal**.
+- **Flipping.** When you place a disc, **every** opponent disc you outflank flips to your color — in **all** outflanking directions at once, not just one.
+- **Passing.** If you have no legal move, you **pass** and the opponent moves again. If **neither** player has a legal move, the game is **over**.
+- **End & result.** The game also ends when the board is full. The winner is whoever has **more** discs; an equal count is a tie.
+
+### What to implement
+
+On an 8×8 board (row-major; \`"B"\`, \`"W"\`, \`"."\` for empty):
+
+- \`initialBoard()\` — the standard starting board described above.
+- \`legalMoves(board, player)\` — every legal move for \`player\`, as \`[row, col]\` pairs.
+- \`applyMove(board, player, r, c)\` — return a **new** board with the disc placed and **all** outflanked discs flipped, in every valid direction. Don't mutate the input; you may assume the move is legal.
+- \`isGameOver(board)\` — true when **neither** player has a legal move.
+- \`score(board)\` — disc counts \`{ B, W }\`.
+
+**Strategy (real round and here): get a minimal working game first, then layer edge cases.** The 8-direction scan is the reusable primitive — write it once and reuse it for move generation, validation, and flipping.`,
+    interviewerNotes: `Redo's reported Section-1 game (console Othello). Tests whether the candidate builds a working core fast and reuses one 8-direction primitive. Strong: a single DIRS array reused across legalMoves/applyMove; legalMoves scans each empty cell in 8 dirs for a run of >=1 opponent piece terminated by the player's own piece; applyMove flips every such run in EVERY direction and returns a fresh board (no mutation); isGameOver = neither side has a move (a stuck player passes; game ends only when BOTH are stuck); score counts. Classic bugs: a move must flip >=1 (empty-adjacent isn't legal), flipping only the first direction found, mutating in place. Coaching: reward getting initialBoard+legalMoves+applyMove working before edge cases — over-elaboration before a playable core is the known failure mode. Hints: (1) "what makes a move legal in Othello?" (2) "write one helper that scans a single direction from (r,c) — what does it return?" (3) "applyMove must flip in EVERY valid direction, not just one."`,
+    starterCode: `type Player = "B" | "W";
+type Cell = Player | ".";
+type Board = Cell[][]; // 8x8, row-major; "." = empty
+
+const N = 8;
+// The 8 directions as [dr, dc]. Reuse this for validation AND flipping.
+const DIRS: ReadonlyArray<readonly [number, number]> = [
+  [-1, -1], [-1, 0], [-1, 1],
+  [0, -1],           [0, 1],
+  [1, -1],  [1, 0],  [1, 1],
+];
+
+function opponent(p: Player): Player {
+  return p === "B" ? "W" : "B";
+}
+
+function inBounds(r: number, c: number): boolean {
+  return r >= 0 && r < N && c >= 0 && c < N;
+}
+
+// Fresh 8x8 board with the four standard center pieces.
+function initialBoard(): Board {
+  // TODO
+  return [];
+}
+
+// Every legal move for player as [row, col] pairs.
+function legalMoves(board: Board, player: Player): Array<[number, number]> {
+  // TODO
+  return [];
+}
+
+// New board with the move applied and all flanked pieces flipped.
+// Assume (r, c) is legal for player. Do NOT mutate board.
+function applyMove(board: Board, player: Player, r: number, c: number): Board {
+  // TODO
+  return board;
+}
+
+// True when NEITHER player has a legal move.
+function isGameOver(board: Board): boolean {
+  // TODO
+  return false;
+}
+
+function score(board: Board): { B: number; W: number } {
+  // TODO
+  return { B: 0, W: 0 };
+}
+`,
+    harness: `
+async function __harnessMain(): Promise<void> {
+  const empty = (): Cell[][] => Array.from({ length: 8 }, () => Array<Cell>(8).fill("."));
+  const key = (ms: Array<[number, number]>) => ms.map((m) => m[0] + "," + m[1]);
+
+  const b0 = initialBoard();
+  __check("initial center", [b0[3][3], b0[3][4], b0[4][3], b0[4][4]], ["W", "B", "B", "W"]);
+  __check("initial score", score(b0), { B: 2, W: 2 });
+  __check("game not over at start", isGameOver(b0), false);
+
+  __checkSet("black opening moves", key(legalMoves(b0, "B")), ["2,3", "3,2", "4,5", "5,4"]);
+  __checkSet("white opening moves", key(legalMoves(b0, "W")), ["2,4", "4,2", "3,5", "5,3"]);
+
+  const b1 = applyMove(b0, "B", 2, 3);
+  __check("apply places + flips", [b1[2][3], b1[3][3], b1[4][3]], ["B", "B", "B"]);
+  __check("apply score", score(b1), { B: 4, W: 1 });
+  __check("apply does not mutate original", score(b0), { B: 2, W: 2 });
+
+  // multi-direction flip: B at (0,0) flanks right (0,1),(0,2) and down (1,0)
+  const bm = empty();
+  bm[0][1] = "W"; bm[0][2] = "W"; bm[0][3] = "B";
+  bm[1][0] = "W"; bm[2][0] = "B";
+  __check("legal move present", key(legalMoves(bm, "B")).includes("0,0"), true);
+  const bm2 = applyMove(bm, "B", 0, 0);
+  __check("multi-direction flip", [bm2[0][0], bm2[0][1], bm2[0][2], bm2[1][0]], ["B", "B", "B", "B"]);
+
+  const full = Array.from({ length: 8 }, () => Array<Cell>(8).fill("B"));
+  __check("no moves on full board", legalMoves(full, "W"), []);
+  __check("full board is game over", isGameOver(full), true);
+  __check("full board score", score(full), { B: 64, W: 0 });
+}
+`,
+    starterCodeJs: `// 8x8 board as arrays of "B", "W", or "." (empty).
+// Reuse this 8-direction list for validation AND flipping.
+const DIRS = [
+  [-1, -1], [-1, 0], [-1, 1],
+  [0, -1],           [0, 1],
+  [1, -1],  [1, 0],  [1, 1],
+];
+
+function opponent(p) {
+  return p === "B" ? "W" : "B";
+}
+
+function inBounds(r, c) {
+  return r >= 0 && r < 8 && c >= 0 && c < 8;
+}
+
+// Fresh 8x8 board with the four standard center pieces.
+function initialBoard() {
+  // TODO
+  return [];
+}
+
+// Every legal move for player as [row, col] pairs.
+function legalMoves(board, player) {
+  // TODO
+  return [];
+}
+
+// New board with the move applied and all flanked pieces flipped.
+// Assume (r, c) is legal for player. Do NOT mutate board.
+function applyMove(board, player, r, c) {
+  // TODO
+  return board;
+}
+
+// True when NEITHER player has a legal move.
+function isGameOver(board) {
+  // TODO
+  return false;
+}
+
+function score(board) {
+  // TODO
+  return { B: 0, W: 0 };
+}
+`,
+    starterCodePy: `# 8x8 board as a list of lists; cells are "B", "W", or "." (empty).
+# Reuse this 8-direction list for validation AND flipping.
+DIRS = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+
+
+def opponent(p):
+    return "W" if p == "B" else "B"
+
+
+def in_bounds(r, c):
+    return 0 <= r < 8 and 0 <= c < 8
+
+
+def initial_board():
+    # TODO: fresh 8x8 board with the four standard center pieces
+    # (3,3)=W, (3,4)=B, (4,3)=B, (4,4)=W
+    return []
+
+
+def legal_moves(board, player):
+    # TODO: list of [r, c] legal moves for player
+    return []
+
+
+def apply_move(board, player, r, c):
+    # TODO: return a NEW board with the piece placed and all flanked pieces
+    # flipped, in every valid direction. Do NOT mutate board. Assume legal.
+    return board
+
+
+def is_game_over(board):
+    # TODO: True when NEITHER player has a legal move
+    return False
+
+
+def score(board):
+    # TODO: return {"B": count, "W": count}
+    return {"B": 0, "W": 0}
+`,
+    harnessPy: `
+def __harness_main():
+    def empty():
+        return [["." for _ in range(8)] for _ in range(8)]
+
+    def key(ms):
+        return [str(m[0]) + "," + str(m[1]) for m in ms]
+
+    b0 = initial_board()
+    __check("initial center", [b0[3][3], b0[3][4], b0[4][3], b0[4][4]], ["W", "B", "B", "W"])
+    __check("initial score", score(b0), {"B": 2, "W": 2})
+    __check("game not over at start", is_game_over(b0), False)
+
+    __checkSet("black opening moves", key(legal_moves(b0, "B")), ["2,3", "3,2", "4,5", "5,4"])
+    __checkSet("white opening moves", key(legal_moves(b0, "W")), ["2,4", "4,2", "3,5", "5,3"])
+
+    b1 = apply_move(b0, "B", 2, 3)
+    __check("apply places + flips", [b1[2][3], b1[3][3], b1[4][3]], ["B", "B", "B"])
+    __check("apply score", score(b1), {"B": 4, "W": 1})
+    __check("apply does not mutate original", score(b0), {"B": 2, "W": 2})
+
+    bm = empty()
+    bm[0][1] = "W"; bm[0][2] = "W"; bm[0][3] = "B"
+    bm[1][0] = "W"; bm[2][0] = "B"
+    __check("legal move present", "0,0" in key(legal_moves(bm, "B")), True)
+    bm2 = apply_move(bm, "B", 0, 0)
+    __check("multi-direction flip", [bm2[0][0], bm2[0][1], bm2[0][2], bm2[1][0]], ["B", "B", "B", "B"])
+
+    full = [["B" for _ in range(8)] for _ in range(8)]
+    __check("no moves on full board", legal_moves(full, "W"), [])
+    __check("full board is game over", is_game_over(full), True)
+    __check("full board score", score(full), {"B": 64, "W": 0})
+`,
+  },
+  {
+    id: "redo-build-tree",
+    track: "redo",
+    type: "coding",
+    title: "Section 2 — Build binary tree from preorder & inorder (LC 105)",
+    est: 20,
+    codeOptional: true,
+    prompt: `**Redo Section 2 (whiteboard).** Reported at Redo more than once — done on a real whiteboard. Given \`preorder\` and \`inorder\` traversals of a binary tree with **distinct** values, reconstruct the tree and return its root.
+
+\`\`\`ts
+function buildTree(preorder: number[], inorder: number[]): TreeNode | null
+\`\`\`
+
+Key idea: \`preorder[0]\` is the root; its position in \`inorder\` splits the left and right subtrees; recurse. State your complexity, and know the hashmap optimization for the inorder lookup. In the real round you write this **by hand** — practice the index bookkeeping without autocomplete.`,
+    interviewerNotes: `Reported Redo whiteboard question (LC 105). Strong: preorder[0] = root; find it in inorder (O(1) via a value->index map, else O(n) scan); everything left of it in inorder is the left subtree, right is the right; recurse with correct index ranges; O(n) time/space with the map, O(n^2) without. Watch for: off-by-one in index ranges, rebuilding the inorder index each call, not handling empty input. On a whiteboard, reward stating the recurrence and complexity before coding. Hints: (1) "what does preorder[0] tell you?" (2) "once you find the root in inorder, what do the two sides represent?" (3) "how do you avoid re-scanning inorder every call?"`,
+    starterCode: `interface TreeNode {
+  val: number;
+  left: TreeNode | null;
+  right: TreeNode | null;
+}
+
+// preorder and inorder of a tree with DISTINCT values. Return the root.
+function buildTree(preorder: number[], inorder: number[]): TreeNode | null {
+  // TODO
+  return null;
+}
+`,
+    harness: `
+async function __harnessMain(): Promise<void> {
+  const pre = (n: TreeNode | null): number[] => (n ? [n.val, ...pre(n.left), ...pre(n.right)] : []);
+  const ino = (n: TreeNode | null): number[] => (n ? [...ino(n.left), n.val, ...ino(n.right)] : []);
+  const cases: Array<[number[], number[]]> = [
+    [[3, 9, 20, 15, 7], [9, 3, 15, 20, 7]],
+    [[-1], [-1]],
+    [[1, 2, 3, 4], [2, 1, 4, 3]],
+    [[1, 2, 3], [1, 2, 3]],
+    [[3, 2, 1], [1, 2, 3]],
+  ];
+  for (const [p, i] of cases) {
+    const t = buildTree([...p], [...i]);
+    __check("preorder " + JSON.stringify(p), pre(t), p);
+    __check("inorder " + JSON.stringify(p), ino(t), i);
+  }
+  __check("empty tree", buildTree([], []), null);
+}
+`,
+    starterCodeJs: `// Tree nodes are plain objects: { val, left, right } (left/right default null).
+// preorder and inorder of a tree with DISTINCT values. Return the root (or null).
+function buildTree(preorder, inorder) {
+  // TODO
+  return null;
+}
+`,
+    starterCodePy: `class TreeNode:
+    def __init__(self, val, left=None, right=None):
+        self.val = val
+        self.left = left
+        self.right = right
+
+
+# preorder and inorder of a tree with DISTINCT values. Return the root (or None).
+def build_tree(preorder, inorder):
+    # TODO
+    return None
+`,
+    harnessPy: `
+def __harness_main():
+    def pre(n):
+        return [n.val] + pre(n.left) + pre(n.right) if n else []
+
+    def ino(n):
+        return ino(n.left) + [n.val] + ino(n.right) if n else []
+
+    cases = [
+        ([3, 9, 20, 15, 7], [9, 3, 15, 20, 7]),
+        ([-1], [-1]),
+        ([1, 2, 3, 4], [2, 1, 4, 3]),
+        ([1, 2, 3], [1, 2, 3]),
+        ([3, 2, 1], [1, 2, 3]),
+    ]
+    for p, i in cases:
+        t = build_tree(list(p), list(i))
+        __check("preorder " + json.dumps(p), pre(t), p)
+        __check("inorder " + json.dumps(p), ino(t), i)
+    __check("empty tree", build_tree([], []), None)
+`,
+  },
+  {
+    id: "redo-increasing-paths",
+    track: "redo",
+    type: "coding",
+    title: "Section 2 — Number of increasing paths in a grid (LC 2328)",
+    est: 25,
+    codeOptional: true,
+    prompt: `**Redo Section 2 (memoization).** Reported at Redo (LC 2328). Given an \`m x n\` grid, count paths where each step moves to a 4-directionally adjacent cell with a **strictly greater** value. A single cell is a path of length 1. Return the count modulo \`1e9 + 7\`.
+
+\`\`\`ts
+function countPaths(grid: number[][]): number
+\`\`\`
+
+This is your **memoization** bucket: DFS from each cell, memo on \`(r, c)\` = number of increasing paths **starting** there. Be ready to state why memo collapses the exponential to \`O(m·n)\`.`,
+    interviewerNotes: `Reported Redo question (LC 2328) — the "memoization" bucket. Strong: dp(r,c) = number of strictly-increasing paths starting at (r,c) = 1 + sum of dp(nr,nc) for neighbors with a greater value; memoize on (r,c) (strictly-increasing => a DAG => memo is safe); answer = sum over all cells, mod 1e9+7; O(mn) time/space. Watch for: forgetting the +1 (each cell itself is a path), inconsistent modulo, using >= instead of > (must be STRICT), no memo (exponential). Hints: (1) "define the subproblem for a single cell" (2) "why is it safe to memoize — could you revisit a cell within one path?" (3) "don't forget each cell alone counts."`,
+    starterCode: `// Count strictly-increasing 4-directional paths; each single cell counts.
+// Return the total modulo 1e9 + 7.
+function countPaths(grid: number[][]): number {
+  // TODO
+  return 0;
+}
+`,
+    harness: `
+async function __harnessMain(): Promise<void> {
+  __check("2x2 example", countPaths([[1, 1], [3, 4]]), 8);
+  __check("single cell", countPaths([[1]]), 1);
+  __check("row increasing", countPaths([[1, 2, 3]]), 6);
+  __check("row decreasing", countPaths([[3, 2, 1]]), 6);
+  __check("2x2 distinct", countPaths([[1, 2], [3, 4]]), 10);
+  __check("all equal 2x2", countPaths([[5, 5], [5, 5]]), 4);
+}
+`,
+    starterCodeJs: `// Count strictly-increasing 4-directional paths; each single cell counts.
+// Return the total modulo 1e9 + 7.
+function countPaths(grid) {
+  // TODO
+  return 0;
+}
+`,
+    starterCodePy: `# Count strictly-increasing 4-directional paths; each single cell counts.
+# Return the total modulo 1e9 + 7.
+def count_paths(grid):
+    # TODO
+    return 0
+`,
+    harnessPy: `
+def __harness_main():
+    __check("2x2 example", count_paths([[1, 1], [3, 4]]), 8)
+    __check("single cell", count_paths([[1]]), 1)
+    __check("row increasing", count_paths([[1, 2, 3]]), 6)
+    __check("row decreasing", count_paths([[3, 2, 1]]), 6)
+    __check("2x2 distinct", count_paths([[1, 2], [3, 4]]), 10)
+    __check("all equal 2x2", count_paths([[5, 5], [5, 5]]), 4)
+`,
+  },
+  {
+    id: "redo-bishop-bfs",
+    track: "redo",
+    type: "coding",
+    title: "Section 2 — Bishop minimum moves (BFS shortest path)",
+    est: 25,
+    codeOptional: true,
+    prompt: `**Redo Section 2 (graph / BFS).** Reported at Redo. On an 8×8 chessboard, squares are indexed \`0..63\` as \`row * 8 + col\`. A **bishop** moves any number of squares along a diagonal (empty board, no blockers). Return the **minimum number of moves** to get from \`start\` to \`target\`, or \`-1\` if impossible. Same square ⇒ \`0\`.
+
+\`\`\`ts
+function minBishopMoves(start: number, target: number): number
+\`\`\`
+
+Model the board as a graph and **BFS** for the shortest path — each move jumps to any square reachable along the four diagonals. (A bishop only ever reaches squares of its own color, so mismatched colors are \`-1\`.)`,
+    interviewerNotes: `Reported Redo question — the "graph problems" bucket, BFS shortest path. Strong: BFS from start; neighbors = every square along the 4 diagonal rays to the board edge; return the distance when target is first dequeued; if unreachable (opposite square color) return -1; same square is 0. On an empty board the answer is 0/1/2 for same-colored squares and -1 for opposite color — a candidate who reasons that out (and proves min-2 for same-color-non-same-diagonal) is strong, but BFS is the general, safe solution. Watch for: enumerating only the adjacent diagonal cell instead of the full ray (the bishop slides), not marking visited, off-by-one on index (row*8+col). Hints: (1) "what squares can a bishop reach in one move from here?" (2) "why might the target be unreachable?" (3) "BFS gives shortest path in an unweighted graph — what are your nodes and edges?"`,
+    starterCode: `// 8x8 board; square index = row * 8 + col (0..63). Bishop slides any distance
+// along a diagonal. Min moves start -> target, or -1 if impossible; same = 0.
+function minBishopMoves(start: number, target: number): number {
+  // TODO
+  return -1;
+}
+`,
+    harness: `
+async function __harnessMain(): Promise<void> {
+  __check("same square", minBishopMoves(0, 0), 0);
+  __check("along main diagonal", minBishopMoves(0, 63), 1);
+  __check("one diagonal step", minBishopMoves(0, 9), 1);
+  __check("anti-diagonal corner", minBishopMoves(56, 7), 1);
+  __check("same color two moves", minBishopMoves(0, 2), 2);
+  __check("same color two moves b", minBishopMoves(0, 11), 2);
+  __check("opposite color impossible", minBishopMoves(0, 1), -1);
+  __check("opposite color corner", minBishopMoves(0, 7), -1);
+}
+`,
+    starterCodeJs: `// 8x8 board; square index = row * 8 + col (0..63). Bishop slides any distance
+// along a diagonal. Min moves start -> target, or -1 if impossible; same = 0.
+function minBishopMoves(start, target) {
+  // TODO
+  return -1;
+}
+`,
+    starterCodePy: `# 8x8 board; square index = row * 8 + col (0..63). Bishop slides any distance
+# along a diagonal. Min moves start -> target, or -1 if impossible; same = 0.
+def min_bishop_moves(start, target):
+    # TODO
+    return -1
+`,
+    harnessPy: `
+def __harness_main():
+    __check("same square", min_bishop_moves(0, 0), 0)
+    __check("along main diagonal", min_bishop_moves(0, 63), 1)
+    __check("one diagonal step", min_bishop_moves(0, 9), 1)
+    __check("anti-diagonal corner", min_bishop_moves(56, 7), 1)
+    __check("same color two moves", min_bishop_moves(0, 2), 2)
+    __check("same color two moves b", min_bishop_moves(0, 11), 2)
+    __check("opposite color impossible", min_bishop_moves(0, 1), -1)
+    __check("opposite color corner", min_bishop_moves(0, 7), -1)
 `,
   },
 ];

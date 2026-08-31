@@ -14,10 +14,14 @@ import {
   discardSession,
   setPortfolioResearch,
   writeDebrief,
+  listSessions,
+  loadSessionFromDisk,
+  readDebrief,
   type Mode,
+  type Session,
 } from "./store";
-import { buildPrompt, buildAssistantPrompt, callAgent, type AskKind } from "./interviewer";
-import { researchFeature } from "./research";
+import { buildPrompt, buildAssistantPrompt, buildPortfolioFinal, callAgent, type AskKind } from "./interviewer";
+import { researchFeature, runReadonlyRepoAgent } from "./research";
 import { repoName, slugify } from "./memory";
 
 const PORT = Number(process.env.ARENA_PORT || 4321);
@@ -79,7 +83,7 @@ async function handleApi(pathname: string, body: any): Promise<unknown> {
         questionIds,
         questions: questionIds.map((id) => {
           const q = QUESTIONS.get(id)!;
-          return { id: q.id, title: q.title, type: q.type, est: q.est, prompt: q.prompt, starterCode: q.starterCode };
+          return { id: q.id, title: q.title, type: q.type, est: q.est, prompt: q.prompt, starterCode: q.starterCode, starterCodeJs: q.starterCodeJs, starterCodePy: q.starterCodePy };
         }),
       };
     }
@@ -98,8 +102,8 @@ async function handleApi(pathname: string, body: any): Promise<unknown> {
     }
 
     case "/api/run": {
-      const { sessionId, questionId, code, t } = body;
-      const result = runCode(String(questionId), String(code ?? ""));
+      const { sessionId, questionId, code, t, lang } = body;
+      const result = runCode(String(questionId), String(code ?? ""), lang === "py" ? "py" : lang === "js" ? "js" : "ts");
       if (getSession(sessionId)) {
         lastRunBySession.set(sessionId, result);
         const summary = result.diagnostics.length
@@ -126,7 +130,7 @@ async function handleApi(pathname: string, body: any): Promise<unknown> {
       const { sessionId, kind, questionId, elapsedSec, remainingSec, code, narrationSince, candidateMessage, t } = body;
       const session = getSession(sessionId);
       if (!session) throw new Error("unknown session");
-      if (kind === "ask" && candidateMessage) {
+      if ((kind === "ask" || kind === "turn") && candidateMessage) {
         addEvent(sessionId, { t: Number(t) || 0, type: "candidate-ask", questionId, data: { text: candidateMessage } });
       }
       if (typeof code === "string" && code) {
@@ -147,7 +151,10 @@ async function handleApi(pathname: string, body: any): Promise<unknown> {
         candidateMessage,
         lastRun: lastRunBySession.get(sessionId) ?? null,
       });
-      const text = await callAgent(prompt, kind === "final" ? 8000 : 2000);
+      const text =
+        kind === "final" && session.track === "portfolio"
+          ? await generatePortfolioDebrief(session)
+          : await callAgent(prompt, kind === "final" ? 8000 : 2000);
       addEvent(sessionId, { t: Number(t) || 0, type: "interviewer", questionId, data: { text, kind } });
       if (kind === "final") {
         endSession(sessionId);
@@ -174,6 +181,77 @@ async function handleApi(pathname: string, body: any): Promise<unknown> {
       return { text };
     }
 
+    // ── past-session review ──────────────────────────────────────────────────
+
+    case "/api/sessions/list": {
+      return { sessions: listSessions() };
+    }
+
+    case "/api/sessions/get": {
+      const id = String(body.sessionId ?? "");
+      const s = loadSessionFromDisk(id);
+      if (!s) throw new Error("session not found");
+      const qTitles: Record<string, string> = {};
+      for (const qid of s.questionIds) {
+        const q = QUESTIONS.get(qid);
+        if (q) qTitles[qid] = q.title;
+      }
+      const groundTruth =
+        s.track === "portfolio"
+          ? s.portfolio?.groundTruth ??
+            (s.events.find((e) => e.type === "ground-truth")?.data.body as string | undefined) ??
+            null
+          : null;
+      const lastT = s.events.length ? s.events[s.events.length - 1].t : 0;
+      return {
+        meta: {
+          id: s.id,
+          createdAt: s.createdAt,
+          track: s.track,
+          mode: s.mode,
+          durationMin: s.durationMin,
+          ended: !!s.ended,
+          title:
+            s.track === "portfolio" && s.portfolio
+              ? `${s.portfolio.featureName} · ${s.portfolio.repoName}`
+              : s.track.toUpperCase(),
+          position: s.track === "portfolio" ? s.portfolio?.position ?? null : null,
+          elapsedSec: Math.floor(lastT / 1000),
+        },
+        events: s.events.filter((e) => e.type !== "snapshot"), // snapshots are code noise
+        qTitles,
+        debrief: readDebrief(id),
+        groundTruth,
+      };
+    }
+
+    case "/api/sessions/debrief": {
+      // Regenerate a missing debrief for a past session (e.g. one that crashed
+      // before "End"). Uses the same final-grading prompt the live app does.
+      const id = String(body.sessionId ?? "");
+      const s = loadSessionFromDisk(id);
+      if (!s) throw new Error("session not found");
+      const qid = [...s.events].reverse().find((e) => e.questionId)?.questionId ?? s.questionIds[0] ?? "";
+      const lastT = s.events.length ? s.events[s.events.length - 1].t : 0;
+      const prompt = buildPrompt({
+        session: s,
+        kind: "final",
+        questionId: qid,
+        elapsedSec: Math.floor(lastT / 1000),
+        remainingSec: 0,
+        code: (qid && s.code?.[qid]) || "",
+        narrationSince: "",
+        lastRun: null,
+      });
+      const text =
+        s.track === "portfolio"
+          ? await generatePortfolioDebrief(s)
+          : await callAgent(prompt, 8000);
+      const file = writeDebrief(id, text);
+      const groundTruth = s.track === "portfolio" ? s.portfolio?.groundTruth ?? null : null;
+      return { text, savedTo: path.relative(ROOT, file), groundTruth };
+    }
+
     default:
       throw new Error(`unknown endpoint ${pathname}`);
   }
@@ -181,9 +259,39 @@ async function handleApi(pathname: string, body: any): Promise<unknown> {
 
 // ── portfolio-defense track ──────────────────────────────────────────────────
 
+// How long the read-only in-repo debrief agent may run before we give up and
+// fall back to the fast notes-only debrief. Large repos need more than the old
+// 300s; override with ARENA_DEBRIEF_TIMEOUT_MS.
+const DEBRIEF_REPO_TIMEOUT_MS = Number(process.env.ARENA_DEBRIEF_TIMEOUT_MS || 600_000);
+
+// Grades a portfolio defense. The interviewer was blind during the live round;
+// the code only comes in here. Best path: the read-only in-repo agent grounds
+// the A/B reference answers in the real code. If that times out or the CLI tools
+// are unavailable, degrade to a FAST notes-only debrief — a distinct prompt with
+// no repo-exploration instruction, so the fallback can't stall the way reusing
+// the repo prompt did (it would flail trying to explore a repo it can't reach).
+async function generatePortfolioDebrief(session: Session): Promise<string> {
+  const repoPath = session.portfolio?.repoPath;
+  if (repoPath && fs.existsSync(repoPath)) {
+    try {
+      return await runReadonlyRepoAgent(
+        repoPath,
+        buildPortfolioFinal(session, { repoAccess: true }),
+        DEBRIEF_REPO_TIMEOUT_MS
+      );
+    } catch (e) {
+      console.error(`portfolio debrief: in-repo agent failed, using notes-only fallback — ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  // A full debrief is a large generation; give the CLI generous headroom so the
+  // fallback itself can't be killed mid-write (a big notes-only debrief ~2-3min).
+  return callAgent(buildPortfolioFinal(session, { repoAccess: false }), 8000, 420_000);
+}
+
 function startPortfolio(body: any, durationMin: number, checkinMin: number): unknown {
   const repoPath = String(body.repoPath ?? "").trim();
   const featureName = String(body.featureName ?? "").trim();
+  const position = String(body.position ?? "").trim();
   if (!repoPath) throw new Error("a repo path is required for the portfolio track");
   if (!featureName) throw new Error("name the feature you want to defend");
   if (!fs.existsSync(repoPath) || !fs.statSync(repoPath).isDirectory()) {
@@ -196,6 +304,7 @@ function startPortfolio(body: any, durationMin: number, checkinMin: number): unk
     repoName: repoName(repoPath),
     featureName,
     featureSlug: slugify(featureName),
+    position: position || undefined,
     researchStatus: "pending",
   });
 

@@ -6,6 +6,7 @@ import { EditorState } from "@codemirror/state";
 import { keymap } from "@codemirror/view";
 import { indentWithTab } from "@codemirror/commands";
 import { javascript } from "@codemirror/lang-javascript";
+import { python } from "@codemirror/lang-python";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { marked } from "marked";
 
@@ -13,12 +14,26 @@ import { marked } from "marked";
 
 interface QuestionMeta { id: string; title: string; type: string; est: number }
 interface TrackMeta { id: string; name: string; blurb: string; defaultPick: string[]; questions: QuestionMeta[] }
-interface SessionQuestion extends QuestionMeta { prompt: string; starterCode: string }
+interface SessionQuestion extends QuestionMeta { prompt: string; starterCode: string; starterCodeJs?: string; starterCodePy?: string }
 
 interface RunResult {
   ok: boolean; diagnostics: string[]; stdout: string; stderr: string;
   cases: { name: string; pass: boolean; detail?: string }[];
   timedOut: boolean; durationMs: number;
+}
+
+// past-session review
+interface SessionSummary {
+  id: string; createdAt: string; track: string; mode: string;
+  durationMin: number; ended: boolean; hasDebrief: boolean; title: string; elapsedSec: number;
+}
+interface ReviewEvent { t: number; type: string; questionId?: string; data: Record<string, any> }
+interface SessionDetail {
+  meta: { id: string; createdAt: string; track: string; mode: string; durationMin: number; ended: boolean; title: string; position?: string | null; elapsedSec: number };
+  events: ReviewEvent[];
+  qTitles: Record<string, string>;
+  debrief: string | null;
+  groundTruth: string | null;
 }
 
 // ── tiny dom helper ─────────────────────────────────────────────────────────
@@ -59,7 +74,8 @@ const S = {
   checkinMin: 7,
   questions: [] as SessionQuestion[],
   current: 0,
-  code: {} as Record<string, string>,
+  lang: "ts" as "ts" | "js" | "py",
+  code: {} as Record<string, string>, // keyed by `${questionId}::${lang}`
   startMs: 0,
   narrationBuffer: [] as string[], // since last interviewer contact
   interviewerBusy: false,
@@ -72,6 +88,7 @@ const S = {
   // portfolio-defense track
   portfolioRepo: "",
   portfolioFeature: "",
+  portfolioPosition: "",
   researchStatus: "pending" as "pending" | "hit" | "refreshed" | "created" | "error",
   researchTimer: 0 as unknown as ReturnType<typeof setInterval>,
 };
@@ -80,6 +97,10 @@ const now = () => Date.now() - S.startMs;
 const elapsedSec = () => Math.floor(now() / 1000);
 const remainingSec = () => Math.max(0, S.durationMin * 60 - elapsedSec());
 const curQ = () => S.questions[S.current];
+// Code is stored per (question, language) so switching languages preserves both.
+const codeKey = (qid: string = curQ()?.id ?? "", lang: "ts" | "js" | "py" = S.lang) => `${qid}::${lang}`;
+const starterFor = (q: SessionQuestion, lang: "ts" | "js" | "py") =>
+  lang === "py" ? q.starterCodePy ?? "" : lang === "js" ? q.starterCodeJs ?? "" : q.starterCode;
 
 // ════════════════════════════ SETUP SCREEN ══════════════════════════════════
 
@@ -136,15 +157,44 @@ async function showSetup() {
     modeWrap.append(b);
   }
   const modeLabel = h("label", {}, "Mode", modeWrap);
+  const checkinLabel = h("label", {}, "Interviewer check-in every (minutes)", checkinInput);
 
   // Portfolio-defense config (repo + feature), shown only for that track.
-  const repoInput = h("input", { placeholder: "/absolute/path/to/your/repo", style: "width:340px" }) as HTMLInputElement;
-  const featureInput = h("input", { placeholder: 'e.g. "the caching layer" or "auth token refresh"', style: "width:340px" }) as HTMLInputElement;
+  // These live on the host machine (localStorage) since your defense target
+  // rarely changes — prefill from the last run so you don't retype the path.
+  let savedRepo = "", savedFeature = "", savedPosition = "";
+  try {
+    savedRepo = localStorage.getItem("arena.portfolioRepo") || "";
+    savedFeature = localStorage.getItem("arena.portfolioFeature") || "";
+    savedPosition = localStorage.getItem("arena.portfolioPosition") || "";
+  } catch { /* private mode */ }
+  const repoInput = h("input", { value: savedRepo, placeholder: "/absolute/path/to/your/repo", style: "width:340px" }) as HTMLInputElement;
+  const featureInput = h("input", { value: savedFeature, placeholder: 'e.g. "the caching layer" or "auth token refresh"', style: "width:340px" }) as HTMLInputElement;
+
+  // Position/role being interviewed for — shapes what the interviewer probes
+  // (an FDE round adds stakeholder/business-case questions). Presets + custom.
+  const POSITION_PRESETS = ["Software Engineer", "Forward Deployed Engineer (FDE)"];
+  const positionSelect = h("select", {
+    style: "width:340px",
+    onchange: () => { positionCustomWrap.style.display = positionSelect.value === "__custom__" ? "" : "none"; },
+  }) as HTMLSelectElement;
+  for (const p of POSITION_PRESETS) positionSelect.append(h("option", { value: p }, p));
+  positionSelect.append(h("option", { value: "__custom__" }, "Custom role…"));
+  const positionCustom = h("input", { placeholder: "e.g. Solutions Engineer, Senior Backend Engineer", style: "width:340px" }) as HTMLInputElement;
+  const positionCustomWrap = h("label", { style: "display:none;flex-direction:column;gap:6px;margin-top:12px" }, "Custom role", positionCustom);
+  if (savedPosition) {
+    if (POSITION_PRESETS.includes(savedPosition)) positionSelect.value = savedPosition;
+    else { positionSelect.value = "__custom__"; positionCustom.value = savedPosition; positionCustomWrap.style.display = "flex"; }
+  }
+  const positionValue = () => (positionSelect.value === "__custom__" ? positionCustom.value.trim() : positionSelect.value);
+
   const portfolioForm = h("div", { class: "qlist", style: "display:none" },
     h("div", { class: "hint", style: "margin:0 0 10px" },
-      "Defend a feature you built. A research agent reads the actual code in this repo (read-only), caches its findings in a memory file under ~/.interview-arena/memory/, and the interviewer grades your spoken defense against it. Ground truth is revealed after you answer."),
+      "Defend a feature you built. A research agent reads the actual code in this repo (read-only) and caches its findings under ~/.interview-arena/memory/. The interviewer runs the live round BLIND (like a real interviewer who hasn't seen your code); the code is used only at the debrief, where your answers are compared against it question-by-question. It's a back-and-forth: narrate or type your point, hit Respond →, and the interviewer reacts — no timed check-ins."),
     h("label", { style: "display:flex;flex-direction:column;gap:6px;margin-bottom:12px" }, "Repo path (on this machine)", repoInput),
-    h("label", { style: "display:flex;flex-direction:column;gap:6px" }, "Feature to defend", featureInput),
+    h("label", { style: "display:flex;flex-direction:column;gap:6px;margin-bottom:12px" }, "Feature to defend", featureInput),
+    h("label", { style: "display:flex;flex-direction:column;gap:6px" }, "Interviewing for (role)", positionSelect),
+    positionCustomWrap,
   );
 
   function updateTrackUI() {
@@ -152,6 +202,9 @@ async function showSetup() {
     qlist.style.display = isPortfolio ? "none" : "";
     portfolioForm.style.display = isPortfolio ? "" : "none";
     modeLabel.style.display = isPortfolio ? "none" : "";
+    // Portfolio is turn-based (you Respond when ready), so a check-in cadence
+    // doesn't apply — hide it.
+    checkinLabel.style.display = isPortfolio ? "none" : "";
     startBtn.textContent = isPortfolio ? "Start defense" : "Start interview";
   }
 
@@ -175,7 +228,16 @@ async function showSetup() {
           questionIds: [...checked],
           repoPath: isPortfolio ? repoInput.value.trim() : undefined,
           featureName: isPortfolio ? featureInput.value.trim() : undefined,
+          position: isPortfolio ? positionValue() : undefined,
         });
+        // Persist a working defense target so it's prefilled next time.
+        if (isPortfolio) {
+          try {
+            localStorage.setItem("arena.portfolioRepo", repoInput.value.trim());
+            localStorage.setItem("arena.portfolioFeature", featureInput.value.trim());
+            localStorage.setItem("arena.portfolioPosition", positionValue());
+          } catch { /* private mode */ }
+        }
       } catch (e) {
         alert(String(e));
         startBtn.textContent = label;
@@ -187,12 +249,15 @@ async function showSetup() {
   renderTracks(); renderQuestions(); updateTrackUI();
   app.append(
     h("div", { class: "setup" },
-      h("h1", {}, "Interview Arena"),
+      h("div", { class: "setup-head" },
+        h("h1", {}, "Interview Arena"),
+        h("button", { onclick: () => void showSessions() }, "Past sessions →"),
+      ),
       h("div", { class: "sub" }, "Timed mock interviews with an AI interviewer that checks in, scores you, and debriefs you. Narrate out loud — that's the point."),
       trackGrid,
       h("div", { class: "setup-row" },
         h("label", {}, "Duration (minutes)", durationInput),
-        h("label", {}, "Interviewer check-in every (minutes)", checkinInput),
+        checkinLabel,
         modeLabel,
       ),
       qlist,
@@ -230,6 +295,7 @@ interface StartOpts {
   questionIds: string[];
   repoPath?: string;
   featureName?: string;
+  position?: string;
 }
 
 async function startSession(opts: StartOpts) {
@@ -241,7 +307,14 @@ async function startSession(opts: StartOpts) {
   S.checkinMin = Math.max(3, Math.min(20, opts.checkinMin || 7));
   S.questions = res.questions;
   S.current = 0;
-  S.code = Object.fromEntries(res.questions.map((q) => [q.id, q.starterCode]));
+  // Redo lists JS/Python (not TS), so default that track to JavaScript.
+  S.lang = opts.track === "redo" ? "js" : "ts";
+  S.code = {};
+  for (const q of res.questions) {
+    S.code[`${q.id}::ts`] = q.starterCode;
+    if (q.starterCodeJs != null) S.code[`${q.id}::js`] = q.starterCodeJs;
+    if (q.starterCodePy != null) S.code[`${q.id}::py`] = q.starterCodePy;
+  }
   S.startMs = Date.now();
   S.questionStartMs = Date.now();
   S.narrationBuffer = [];
@@ -249,6 +322,7 @@ async function startSession(opts: StartOpts) {
   S.ended = false;
   S.portfolioRepo = opts.repoPath ?? "";
   S.portfolioFeature = opts.featureName ?? "";
+  S.portfolioPosition = opts.position ?? "";
   S.researchStatus = "pending";
 
   renderArena();
@@ -268,6 +342,22 @@ function renderArena() {
   qTimerEl = h("div", { class: "qtimer" }, "");
   const runBtn = h("button", { class: "primary", onclick: () => void runCurrent() }, "▶ Run (⌘/Ctrl+Enter)");
   const nextBtn = h("button", { onclick: () => nextQuestion() }, "Next question →");
+  // Language picker — TypeScript always; JavaScript / Python when the track's
+  // questions ship those variants (only shown when there's a real choice).
+  let langSelect: HTMLSelectElement | null = null;
+  if (!isPortfolio) {
+    const opts = [h("option", { value: "ts" }, "TypeScript")];
+    if (S.questions.some((q) => q.starterCodeJs != null)) opts.push(h("option", { value: "js" }, "JavaScript"));
+    if (S.questions.some((q) => q.starterCodePy != null)) opts.push(h("option", { value: "py" }, "Python"));
+    if (opts.length > 1) {
+      const sel = h("select", {
+        title: "Language for the coding editor",
+        onchange: () => setLang(sel.value === "py" ? "py" : sel.value === "js" ? "js" : "ts"),
+      }, ...opts) as HTMLSelectElement;
+      sel.value = S.lang;
+      langSelect = sel;
+    }
+  }
   const ttsBtn = h("button", {
     class: S.ttsEnabled ? "active" : "",
     onclick: () => { S.ttsEnabled = !S.ttsEnabled; ttsBtn.classList.toggle("active", S.ttsEnabled); if (!S.ttsEnabled) speechSynthesis.cancel(); },
@@ -290,6 +380,7 @@ function renderArena() {
     ? [
         h("span", { class: "badge" }, "PORTFOLIO"),
         h("span", { class: "badge", title: S.portfolioRepo }, `${S.portfolioRepo.split("/").filter(Boolean).pop() || "repo"} · ${S.portfolioFeature}`),
+        ...(S.portfolioPosition ? [h("span", { class: "badge", title: "Role being interviewed for" }, S.portfolioPosition)] : []),
         (researchBadge = h("span", { class: "badge", title: "The research agent is reading the code" }, "◐ researching…")),
       ]
     : [
@@ -301,7 +392,7 @@ function renderArena() {
     ...badges,
     timerEl, qTimerEl,
     h("div", { class: "spacer" }),
-    ...(isPortfolio ? [] : [runBtn, nextBtn]),
+    ...(isPortfolio ? [] : [langSelect, runBtn, nextBtn]),
     ttsBtn, buildVoiceSelect(), discardBtn, endBtn,
   );
 
@@ -326,10 +417,14 @@ function renderArena() {
   // interviewer panel + ask box
   interviewerFeed = h("div", { class: "feed" });
   tabPanels["Interviewer"].append(interviewerFeed);
-  const askInput = h("input", { placeholder: "Ask the interviewer a question…" }) as HTMLInputElement;
-  const askSend = h("button", { class: "primary", onclick: () => void askInterviewer(askInput) }, "Ask");
-  askInput.onkeydown = (e) => { if (e.key === "Enter") void askInterviewer(askInput); };
-  tabPanels["Interviewer"].append(h("div", { class: "chat-input", style: "position:sticky;bottom:-16px;margin:16px -16px -16px" }, askInput, askSend));
+  // Coding tracks: a free-form "Ask" box. Portfolio is turn-based, so its
+  // composer lives in the narration bar below (mic + Respond) instead.
+  if (!isPortfolio) {
+    const askInput = h("input", { placeholder: "Ask the interviewer a question…" }) as HTMLInputElement;
+    const askSend = h("button", { class: "primary", onclick: () => void askInterviewer(askInput) }, "Ask");
+    askInput.onkeydown = (e) => { if (e.key === "Enter") void askInterviewer(askInput); };
+    tabPanels["Interviewer"].append(h("div", { class: "chat-input", style: "position:sticky;bottom:-16px;margin:16px -16px -16px" }, askInput, askSend));
+  }
 
   // assistant panel (AI mode)
   if (S.mode === "ai") {
@@ -350,18 +445,29 @@ function renderArena() {
   const right = h("div", { class: "right" }, editorWrap, ...(isPortfolio ? [] : [outputEl]));
 
   // ── narration bar ──
-  liveEl = h("div", { class: "live" }, "Mic off — enable to practice narrating out loud, or type notes on the right.");
+  // Coding tracks: narrate-out-loud practice (buffered, flushed on check-ins).
+  // Portfolio: this bar is the turn composer — narrate by voice and/or type,
+  // then hit Respond → to hand the turn to the interviewer for a reply.
   micBtn = h("button", { onclick: toggleMic }, "🎙 Mic off") as HTMLButtonElement;
-  const noteInput = h("input", { placeholder: "…or type narration here", style: "width:280px" }) as HTMLInputElement;
-  noteInput.onkeydown = (e) => {
-    if (e.key === "Enter" && noteInput.value.trim()) {
-      recordNarration(noteInput.value.trim());
-      noteInput.value = "";
-    }
-  };
-  const narration = h("div", { class: "narration" }, micBtn, liveEl, noteInput);
-
-  app.append(h("div", { class: "arena" }, topbar, h("div", { class: "cols" }, left, right), narration));
+  if (isPortfolio) {
+    liveEl = h("div", { class: "live" }, "Narrate your defense out loud (mic) or type it, then hit Respond → to answer.");
+    const respInput = h("input", { placeholder: "Type your response — or narrate by voice, then Respond →", style: "flex:1;min-width:220px" }) as HTMLInputElement;
+    const respBtn = h("button", { class: "primary", onclick: () => void submitPortfolioTurn(respInput) }, "Respond →");
+    respInput.onkeydown = (e) => { if (e.key === "Enter") void submitPortfolioTurn(respInput); };
+    const narration = h("div", { class: "narration" }, micBtn, liveEl, respInput, respBtn);
+    app.append(h("div", { class: "arena" }, topbar, h("div", { class: "cols" }, left, right), narration));
+  } else {
+    liveEl = h("div", { class: "live" }, "Mic off — enable to practice narrating out loud, or type notes on the right.");
+    const noteInput = h("input", { placeholder: "…or type narration here", style: "width:280px" }) as HTMLInputElement;
+    noteInput.onkeydown = (e) => {
+      if (e.key === "Enter" && noteInput.value.trim()) {
+        recordNarration(noteInput.value.trim());
+        noteInput.value = "";
+      }
+    };
+    const narration = h("div", { class: "narration" }, micBtn, liveEl, noteInput);
+    app.append(h("div", { class: "arena" }, topbar, h("div", { class: "cols" }, left, right), narration));
+  }
 
   makeEditor(editorWrap);
   selectTab("Question");
@@ -385,11 +491,11 @@ function notifyTab(name: string) {
 function makeEditor(parent: HTMLElement) {
   editor = new EditorView({
     parent,
-    state: editorStateFor(""),
+    state: editorStateFor("", S.lang),
   });
 }
 
-function editorStateFor(doc: string) {
+function editorStateFor(doc: string, lang: "ts" | "js" | "py" = "ts") {
   return EditorState.create({
     doc,
     extensions: [
@@ -398,10 +504,10 @@ function editorStateFor(doc: string) {
         { key: "Mod-Enter", run: () => { void runCurrent(); return true; } },
         indentWithTab,
       ]),
-      javascript({ typescript: true }),
+      lang === "py" ? python() : javascript({ typescript: lang === "ts" }),
       oneDark,
       EditorView.updateListener.of((u) => {
-        if (u.docChanged && curQ()) S.code[curQ().id] = u.state.doc.toString();
+        if (u.docChanged && curQ()) S.code[codeKey()] = u.state.doc.toString();
       }),
     ],
   });
@@ -419,7 +525,23 @@ function loadQuestion(idx: number) {
       onclick: () => switchToQuestion(i, false),
     }, `Q${i + 1}: ${qq.title}`));
   });
-  editor!.setState(editorStateFor(S.code[q.id] ?? q.starterCode));
+  editor!.setState(editorStateFor(S.code[codeKey(q.id)] ?? starterFor(q, S.lang), S.lang));
+}
+
+// Switch the coding language: preserve the current buffer, load the other
+// language's buffer (or its starter), and re-theme the editor.
+function setLang(lang: "ts" | "js" | "py") {
+  if (lang === S.lang || !editor || !curQ()) return;
+  S.code[codeKey(curQ().id, S.lang)] = editor.state.doc.toString();
+  S.lang = lang;
+  const q = curQ();
+  const doc = S.code[codeKey(q.id, lang)] ?? starterFor(q, lang);
+  editor.setState(editorStateFor(doc, lang));
+  if (outputEl) {
+    const label = lang === "py" ? "Python" : lang === "js" ? "JavaScript" : "TypeScript";
+    outputEl.innerHTML = "";
+    outputEl.append(h("span", { class: "dim" }, `Language: ${label}. ⌘/Ctrl+Enter to run.`));
+  }
 }
 
 function switchToQuestion(idx: number, announce: boolean) {
@@ -444,9 +566,9 @@ async function runCurrent() {
   if (S.track === "portfolio") return; // notes pad — nothing to compile/run
   const q = curQ();
   outputEl.innerHTML = "";
-  outputEl.append(h("span", { class: "dim" }, "Compiling with tsc…"));
+  outputEl.append(h("span", { class: "dim" }, S.lang === "py" ? "Running Python…" : S.lang === "js" ? "Running JavaScript…" : "Compiling with tsc…"));
   try {
-    const r = await api<RunResult>("/api/run", { sessionId: S.sessionId, questionId: q.id, code: S.code[q.id], t: now() });
+    const r = await api<RunResult>("/api/run", { sessionId: S.sessionId, questionId: q.id, code: S.code[codeKey()], t: now(), lang: S.lang });
     renderRun(r);
   } catch (e) {
     outputEl.innerHTML = "";
@@ -476,7 +598,13 @@ function renderRun(r: RunResult) {
         `${c.pass ? "✓" : "✗"} ${c.name}${c.detail ? " — " + c.detail : ""}`));
     }
   } else if (!r.stdout.trim() && !r.stderr && !r.timedOut) {
-    outputEl.append(h("div", { class: "pass" }, "✓ Compiled and ran cleanly (no tests for this question — it's a discussion round)."));
+    // Zero test cases. For a coding question that means the hidden tests never
+    // ran — almost always because the candidate's code exits the module early.
+    if (curQ()?.type === "coding") {
+      outputEl.append(h("div", { class: "fail" }, "⚠ No test results came back — your code appears to exit before the tests run. Remove any top-level `return`, `process.exit()`, or a call to your interactive main loop (the hidden tests run after your code)."));
+    } else {
+      outputEl.append(h("div", { class: "pass" }, "✓ Compiled and ran cleanly (no tests for this question — it's a discussion round)."));
+    }
   }
 }
 
@@ -496,7 +624,9 @@ function startClock() {
 
 function scheduleCheckin() {
   clearTimeout(S.checkinTimer);
-  if (S.ended) return;
+  // Portfolio defense is turn-based — the interviewer replies when the candidate
+  // submits a turn, not on a timer. No periodic check-ins here.
+  if (S.ended || S.track === "portfolio") return;
   S.checkinTimer = setTimeout(() => {
     if (!S.ended) void contactInterviewer("checkin");
   }, S.checkinMin * 60 * 1000);
@@ -504,7 +634,7 @@ function scheduleCheckin() {
 
 // ── interviewer ─────────────────────────────────────────────────────────────
 
-async function contactInterviewer(kind: "kickoff" | "checkin" | "ask", candidateMessage?: string) {
+async function contactInterviewer(kind: "kickoff" | "checkin" | "turn" | "ask", candidateMessage?: string) {
   if (S.interviewerBusy) { if (kind === "checkin") scheduleCheckin(); return; }
   S.interviewerBusy = true;
   const thinking = h("div", { class: "msg interviewer thinking" }, "interviewer is thinking…");
@@ -518,7 +648,7 @@ async function contactInterviewer(kind: "kickoff" | "checkin" | "ask", candidate
       questionId: curQ().id,
       elapsedSec: elapsedSec(),
       remainingSec: remainingSec(),
-      code: S.code[curQ().id],
+      code: S.code[codeKey()],
       narrationSince,
       candidateMessage,
       t: now(),
@@ -553,6 +683,27 @@ async function askInterviewer(input: HTMLInputElement) {
   await contactInterviewer("ask", text);
 }
 
+// Portfolio defense is turn-based: the candidate composes a turn out of their
+// spoken narration (buffered) plus anything typed here, hits Respond, and the
+// interviewer replies to that turn. contactInterviewer() sends the buffered
+// narration as narrationSince and clears it on success.
+async function submitPortfolioTurn(input: HTMLInputElement) {
+  if (S.interviewerBusy) return;
+  const typed = input.value.trim();
+  const narrated = S.narrationBuffer.join(" ").trim();
+  if (!typed && !narrated) {
+    liveEl.textContent = "Say or type your response first, then hit Respond →";
+    return;
+  }
+  input.value = "";
+  const shown = [narrated, typed].filter(Boolean).join(" ");
+  selectTab("Interviewer");
+  const el = h("div", { class: "msg me" }, h("div", { class: "who" }, "You"), shown);
+  interviewerFeed.append(el);
+  el.scrollIntoView({ block: "end" });
+  await contactInterviewer("turn", typed || undefined);
+}
+
 // ── AI assistant (AI mode) ──────────────────────────────────────────────────
 
 async function promptAssistant(input: HTMLInputElement) {
@@ -568,7 +719,7 @@ async function promptAssistant(input: HTMLInputElement) {
   try {
     const res = await api<{ text: string }>("/api/assistant", {
       sessionId: S.sessionId, questionId: curQ().id,
-      history: S.assistantHistory.slice(-12), code: S.code[curQ().id], t: now(),
+      history: S.assistantHistory.slice(-12), code: S.code[codeKey()], t: now(),
     });
     S.assistantHistory.push({ role: "assistant", text: res.text });
     thinking.remove();
@@ -788,7 +939,7 @@ async function finishInterview(reason: string) {
       questionId: curQ().id,
       elapsedSec: elapsedSec(),
       remainingSec: remainingSec(),
-      code: S.code[curQ().id],
+      code: S.code[codeKey()],
       narrationSince: S.narrationBuffer.join("\n"),
       t: now(),
     });
@@ -812,6 +963,173 @@ async function finishInterview(reason: string) {
       h("p", {}, "Your session log is still saved under sessions/."),
       h("button", { onclick: () => location.reload() }, "Back to setup"));
   }
+}
+
+// ════════════════════════════ PAST SESSIONS ═════════════════════════════════
+
+async function showSessions() {
+  app.innerHTML = "";
+  const listEl = h("div", { class: "session-list" }, h("div", { class: "hint" }, "Loading…"));
+  app.append(
+    h("div", { class: "setup" },
+      h("div", { class: "setup-head" },
+        h("h1", {}, "Past sessions"),
+        h("button", { onclick: () => void showSetup() }, "← New session"),
+      ),
+      h("div", { class: "sub" }, "Your saved practice runs — debriefs, the interviewer conversation, and (for Portfolio Defense) the revealed ground truth."),
+      listEl,
+    ),
+  );
+  try {
+    const { sessions } = await api<{ sessions: SessionSummary[] }>("/api/sessions/list", {});
+    listEl.innerHTML = "";
+    if (!sessions.length) {
+      listEl.append(h("div", { class: "hint" }, "No past sessions yet. Finish (or start) a session and it'll show up here."));
+      return;
+    }
+    for (const s of sessions) {
+      const when = new Date(s.createdAt).toLocaleString();
+      const mins = Math.max(1, Math.round(s.elapsedSec / 60));
+      listEl.append(
+        h("div", { class: "session-card", onclick: () => void showSessionDetail(s.id) },
+          h("div", { class: "session-title" }, s.title),
+          h("div", { class: "session-meta" },
+            h("span", { class: "badge" }, s.track.toUpperCase()),
+            s.hasDebrief
+              ? h("span", { class: "badge ok" }, "✓ debrief")
+              : h("span", { class: "badge warn" }, "no debrief"),
+            s.ended ? null : h("span", { class: "badge warn" }, "unfinished"),
+            h("span", { class: "session-when" }, `${when} · ${mins}m`),
+          ),
+        ),
+      );
+    }
+  } catch (e) {
+    listEl.innerHTML = "";
+    listEl.append(h("div", { class: "fail" }, String(e)));
+  }
+}
+
+async function showSessionDetail(id: string) {
+  app.innerHTML = "";
+  const body = h("div", {}, h("div", { class: "hint" }, "Loading…"));
+  app.append(
+    h("div", { class: "debrief" },
+      h("div", { class: "setup-head" },
+        h("button", { onclick: () => void showSessions() }, "← All sessions"),
+        h("button", { onclick: () => void showSetup() }, "New session"),
+      ),
+      body,
+    ),
+  );
+  try {
+    const d = await api<SessionDetail>("/api/sessions/get", { sessionId: id });
+    body.innerHTML = "";
+    const when = new Date(d.meta.createdAt).toLocaleString();
+    const mins = Math.max(1, Math.round(d.meta.elapsedSec / 60));
+    body.append(
+      h("h1", { style: "margin-top:14px" }, d.meta.title),
+      h("div", { class: "hint", style: "margin-bottom:24px" },
+        `${d.meta.track.toUpperCase()}${d.meta.position ? " · " + d.meta.position : ""} · ${d.meta.mode.toUpperCase()} mode · ${when} · ${mins}m${d.meta.ended ? "" : " · unfinished"}`),
+    );
+
+    // ── debrief ──
+    body.append(h("h2", {}, "Debrief"));
+    const debriefSec = h("div", {});
+    if (d.debrief) {
+      const md = h("div", {});
+      md.innerHTML = marked.parse(d.debrief) as string;
+      debriefSec.append(md);
+    } else {
+      debriefSec.append(h("p", { class: "hint" }, "No debrief was generated — this session didn't reach the end. You can grade it now from the saved transcript:"));
+      const gen = h("button", { class: "primary" }, "Generate debrief now") as HTMLButtonElement;
+      gen.onclick = async () => {
+        gen.textContent = "Grading transcript…"; gen.disabled = true;
+        try {
+          const r = await api<{ text: string }>("/api/sessions/debrief", { sessionId: id });
+          const md = h("div", {});
+          md.innerHTML = marked.parse(r.text) as string;
+          debriefSec.innerHTML = "";
+          debriefSec.append(md);
+        } catch (e) {
+          gen.textContent = "Generate debrief now"; gen.disabled = false;
+          alert(String(e));
+        }
+      };
+      debriefSec.append(h("div", { style: "margin-top:8px" }, gen));
+    }
+    body.append(debriefSec);
+
+    // ── transcript ──
+    body.append(h("h2", { style: "margin-top:32px" }, "Transcript"));
+    body.append(renderTranscript(d.events, d.qTitles));
+
+    // ── ground truth (portfolio) ──
+    if (d.groundTruth) {
+      const gt = h("div", { class: "qprompt", style: "display:none;margin-top:12px;padding:16px;border:1px solid var(--border);border-radius:10px;background:var(--panel)" });
+      gt.innerHTML = marked.parse(d.groundTruth) as string;
+      const toggle = h("button", {
+        style: "margin-top:8px",
+        onclick: () => { const open = gt.style.display !== "none"; gt.style.display = open ? "none" : "block"; toggle.textContent = open ? "▸ Reveal ground truth (what the code actually does)" : "▾ Hide ground truth"; },
+      }, "▸ Reveal ground truth (what the code actually does)");
+      body.append(h("h2", { style: "margin-top:32px" }, "Ground truth"), toggle, gt);
+    }
+  } catch (e) {
+    body.innerHTML = "";
+    body.append(h("div", { class: "fail" }, String(e)));
+  }
+}
+
+function fmtClock(ms: number): string {
+  return `${Math.floor(ms / 60000)}:${String(Math.floor((ms % 60000) / 1000)).padStart(2, "0")}`;
+}
+
+// Renders the saved event log as a readable conversation. Consecutive narration
+// snippets are coalesced into one block so a session with 100+ voice fragments
+// reads as a few paragraphs, not a wall of one-liners.
+function renderTranscript(events: ReviewEvent[], qTitles: Record<string, string>): HTMLElement {
+  const feed = h("div", { class: "feed review-feed" });
+  let narr: string[] = [];
+  let narrStart = 0;
+  const flush = () => {
+    if (!narr.length) return;
+    feed.append(h("div", { class: "msg me" },
+      h("div", { class: "who" }, `You · narration · ${fmtClock(narrStart)}`), narr.join(" ")));
+    narr = [];
+  };
+  for (const e of events) {
+    if (e.type === "narration") {
+      if (!narr.length) narrStart = e.t;
+      narr.push(String(e.data.text ?? ""));
+      continue;
+    }
+    flush();
+    const at = fmtClock(e.t);
+    if (e.type === "interviewer") {
+      feed.append(h("div", { class: "msg interviewer" }, h("div", { class: "who" }, `Interviewer · ${at}`), String(e.data.text ?? "")));
+    } else if (e.type === "candidate-ask") {
+      feed.append(h("div", { class: "msg me" }, h("div", { class: "who" }, `You · ${at}`), String(e.data.text ?? "")));
+    } else if (e.type === "assistant-prompt") {
+      feed.append(h("div", { class: "msg me" }, h("div", { class: "who" }, `You → AI · ${at}`), String(e.data.text ?? "")));
+    } else if (e.type === "assistant-reply") {
+      const el = h("div", { class: "msg assistant" }, h("div", { class: "who" }, `AI assistant · ${at}`));
+      const b = h("div", {}); b.innerHTML = marked.parse(String(e.data.text ?? "")) as string; el.append(b);
+      feed.append(el);
+    } else if (e.type === "run") {
+      feed.append(h("div", { class: "review-row" }, `▶ ${at} — ${String(e.data.summary ?? "ran code")}`));
+    } else if (e.type === "question-switch") {
+      const qid = e.questionId ?? "";
+      feed.append(h("div", { class: "review-divider" }, `— moved to ${qTitles[qid] ?? qid} · ${at} —`));
+    } else if (e.type === "research-hit" || e.type === "research-refresh") {
+      feed.append(h("div", { class: "review-row dim" }, `⚙ ${at} — research ${e.type === "research-hit" ? "served from cache" : "re-read the code"}`));
+    } else if (e.type === "research-error") {
+      feed.append(h("div", { class: "review-row fail" }, `⚙ ${at} — research failed: ${String(e.data.error ?? "")}`));
+    }
+    // start / end / ground-truth are handled outside the timeline
+  }
+  flush();
+  if (!feed.childNodes.length) feed.append(h("div", { class: "hint" }, "No conversation was recorded in this session."));
+  return feed;
 }
 
 // ── boot ────────────────────────────────────────────────────────────────────

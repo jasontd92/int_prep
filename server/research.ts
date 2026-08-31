@@ -136,6 +136,20 @@ function extractKeyFiles(body: string): string[] {
 // ── the CLI bridge (read-only, repo cwd) ─────────────────────────────────────
 
 function callResearchAgent(repoPath: string, prompt: string): Promise<string> {
+  return runReadonlyRepoAgent(repoPath, prompt);
+}
+
+/**
+ * Runs `claude -p` in headless mode with the target repo as cwd and a READ-ONLY
+ * tool set, so the agent can explore the actual code but never modify it. Shared
+ * by feature research and the portfolio debrief (whose reference answers are
+ * grounded in the real code). CLI-only — the SDK path has no filesystem tools.
+ */
+export function runReadonlyRepoAgent(
+  repoPath: string,
+  prompt: string,
+  timeoutMs = 300_000
+): Promise<string> {
   return new Promise((resolve, reject) => {
     if (!fs.existsSync(repoPath) || !fs.statSync(repoPath).isDirectory()) {
       reject(new Error(`repo path not found: ${repoPath}`));
@@ -147,7 +161,7 @@ function callResearchAgent(repoPath: string, prompt: string): Promise<string> {
       {
         cwd: repoPath, // the agent explores the real repo from here
         stdio: ["pipe", "pipe", "pipe"],
-        timeout: 300_000, // research reads many files; allow more time
+        timeout: timeoutMs, // reading many files takes time; allow generous budget
       }
     );
     let out = "";
@@ -155,7 +169,7 @@ function callResearchAgent(repoPath: string, prompt: string): Promise<string> {
     proc.stdout.on("data", (d) => (out += d));
     proc.stderr.on("data", (d) => (err += d));
     proc.on("error", (e) =>
-      reject(new Error(`claude CLI unavailable (research needs it): ${e.message}`))
+      reject(new Error(`claude CLI unavailable (repo agent needs it): ${e.message}`))
     );
     proc.on("close", (code) => {
       if (code === 0 && out.trim()) resolve(out);
