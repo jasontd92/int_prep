@@ -1,6 +1,6 @@
 # Interview Arena
 
-Timed mock-interview practice for **Cursor FDE**, **OpenAI FDE**, and **classic DS&A**, with an AI interviewer that checks in on a clock, hints without spoiling, and writes you a scored debrief.
+Timed mock-interview practice for **Cursor FDE**, **OpenAI FDE**, **classic DS&A / systems design**, and the **Redo** senior-SWE bank, with an AI interviewer that checks in on a clock, hints without spoiling, and writes you a scored debrief.
 
 ```bash
 npm install
@@ -11,16 +11,21 @@ npm run arena      # → http://localhost:4321
 
 ## What's in it
 
-**Three tracks, 26 questions.**
+**Seven tracks, 45 static questions (+ your own repos).**
 
 | Track | Questions | Focus |
 |---|---|---|
 | Cursor FDE | 11 | Merkle diff, text buffers, Tab prediction, monorepo indexing, streaming edits, apply models, eval strategy, agent harnesses, context-window economics, inference cost, the work-trial meta-question |
+| Cursor FDE — Stateful Backend | 6 | The **actual 45-min live-coding format**: an in-memory backend that starts simple and grows part by part. TTL+LRU cache, sliding-window rate limiter, metrics aggregator, resource booking, delayed-job scheduler, conversation/session store — maps, lists, queues, and injected clocks. TS + JS starters (JS default). |
 | OpenAI FDE | 7 | Token-bucket limiter, retry/backoff, cost attribution, enterprise RAG with ACLs, LLM gateway, a "the model got worse" escalation, one-week POC scoping |
 | Classic DS&A | 10 | Two Sum, valid parens, merge intervals, LRU cache, binary-search bounds, sliding window, linked lists, islands, top-K, topological sort |
+| Classic Systems Design | 7 | URL shortener, news feed, chat, notification fan-out, booking (no double-book), distributed KV/cache, distributed rate limiter |
+| Redo (Senior SWE) | 4 | Stubbed Othello CLI, build-tree from traversals (LC 105), increasing paths (LC 2328), bishop-BFS. TS + JS + Python. |
 | Portfolio Defense | *your repos* | Defend a feature **you** built against the actual code — architecture, tradeoffs, decisions. See below. |
 
 The Cursor set is drawn from [ombharatiya/AI-Engineer-Interview-Questions](https://github.com/ombharatiya/AI-Engineer-Interview-Questions/blob/main/14-company-interview-questions/cursor-anysphere.md) — including the reported work-trial format and the "AI tools allowed, with scoped-query expectations" wrinkle.
+
+The **Stateful Backend** track matches the official Cursor FDE guide most directly: *"live coding on a stateful backend problem … later parts build on earlier ones … requirements will evolve … not finishing every part is expected."* Each prompt is written in incremental parts (v1 → v4); the interviewer reveals them one at a time and rewards **extending** your objects rather than rewriting them. Practice these in JavaScript with constant narration.
 
 **Two modes.**
 - **Manual** — you write every line. Raw coding signal.
@@ -104,7 +109,7 @@ npm run typecheck   # tsc --noEmit
 npm run build       # bundle the frontend
 ```
 
-`npm run verify` is the guard on question quality: it runs a known-good solution through each harness and asserts all cases pass, then asserts that unmodified starter code *fails* — so a harness can never be silently vacuous. All 15 coding harnesses pass.
+`npm run verify` is the guard on question quality: it runs a known-good solution through each harness and asserts all cases pass, then asserts that unmodified starter code *fails* — so a harness can never be silently vacuous. All 25 coding harnesses pass.
 
 **Adding a question**: append to `Q` in `server/questions.ts` (`prompt` is what the candidate sees, `interviewerNotes` is hidden and shapes the agent's hints, `harness` defines `__harnessMain` using `__check`/`__checkSet`), add a reference solution to `scripts/verify-harnesses.ts`, and run `npm run verify`.
 

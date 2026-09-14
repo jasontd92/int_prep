@@ -307,8 +307,9 @@ async function startSession(opts: StartOpts) {
   S.checkinMin = Math.max(3, Math.min(20, opts.checkinMin || 7));
   S.questions = res.questions;
   S.current = 0;
-  // Redo lists JS/Python (not TS), so default that track to JavaScript.
-  S.lang = opts.track === "redo" ? "js" : "ts";
+  // Redo and the stateful-backend track model real CoderPad rounds where you'd
+  // reach for JS, so default those to JavaScript.
+  S.lang = opts.track === "redo" || opts.track === "backend" ? "js" : "ts";
   S.code = {};
   for (const q of res.questions) {
     S.code[`${q.id}::ts`] = q.starterCode;

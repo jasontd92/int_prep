@@ -5,7 +5,7 @@
 
 import { slugify, repoName } from "./memory";
 
-export type Track = "cursor" | "openai" | "dsa" | "systems" | "redo" | "portfolio";
+export type Track = "cursor" | "backend" | "openai" | "dsa" | "systems" | "redo" | "portfolio";
 export type QuestionType = "coding" | "design" | "scenario" | "defense";
 
 export interface Question {
@@ -59,6 +59,13 @@ export const TRACKS: TrackInfo[] = [
     blurb:
       "Practical editor-infra coding + AI-systems design, modeled on Cursor (Anysphere) interview reports. AI tools are allowed in real Cursor rounds — practice scoped queries in AI mode.",
     defaultPick: ["cursor-merkle-diff", "cursor-tab-design"],
+  },
+  {
+    id: "backend",
+    name: "Cursor FDE — Stateful Backend (evolving)",
+    blurb:
+      "The actual Cursor FDE 45-min live-coding format: a small in-memory backend that starts simple and grows as the interviewer layers on new requirements. Maps, lists, queues, and time — later parts reuse your earlier objects, and finishing every part is NOT expected. Defaults to JavaScript; narrate constantly and inject the clock so behavior stays testable.",
+    defaultPick: ["backend-cache-ttl-lru", "backend-rate-limiter"],
   },
   {
     id: "openai",
@@ -1770,6 +1777,770 @@ def __harness_main():
     __check("same color two moves b", min_bishop_moves(0, 11), 2)
     __check("opposite color impossible", min_bishop_moves(0, 1), -1)
     __check("opposite color corner", min_bishop_moves(0, 7), -1)
+`,
+  },
+
+  // ───────────── CURSOR FDE — STATEFUL BACKEND (evolving) ─────────────
+  // The real 45-min format: a small in-memory backend that starts simple and
+  // grows as the interviewer adds requirements. Each prompt is written in PARTS
+  // (v1 -> v4); the harness tests the final combined API. The interviewer notes
+  // tell the agent to reveal parts progressively and reward extend-don't-rewrite.
+  // Time-based problems inject the clock (a `now` fn or a `nowMs` arg) so behavior
+  // is deterministic. Ships TypeScript + JavaScript starters (JS is the default).
+  {
+    id: "backend-cache-ttl-lru",
+    track: "backend",
+    type: "coding",
+    title: "In-memory cache: TTL + LRU (builds in parts)",
+    est: 40,
+    prompt: `Build an in-memory cache. This is the highest-frequency Cursor-FDE-style problem: it starts as a two-method wrapper over a map and grows into a real cache. **Get each part working and running before you look at the next one — later parts must not break earlier ones.**
+
+\`\`\`ts
+class Cache {
+  // now() is injected so TTL is testable ("pretend it's time X").
+  constructor(options?: { maxSize?: number; now?: () => number })
+  set(key: string, value: number, ttlMs?: number): void
+  get(key: string): number | undefined   // undefined if absent or expired; counts as a use
+}
+\`\`\`
+
+- **Part 1 — basics.** \`set\` / \`get\` over a \`Map\`. Overwriting a key updates its value.
+- **Part 2 — TTL.** \`set(key, value, ttlMs)\` expires the entry \`ttlMs\` after it was written (use the injected \`now()\`). An entry with no \`ttlMs\` never expires. Expire **lazily** on read. Add \`has(key): boolean\` (live presence, does *not* count as a use) and \`delete(key): boolean\`.
+- **Part 3 — bounded size + LRU.** Honor \`maxSize\`: when a \`set\` pushes the cache over capacity, evict the **least-recently-used** live entry. \`get\` and a \`set\` that updates an existing key both count as uses. (Ask yourself what a JS \`Map\`'s insertion order gives you for free.) Expired entries must never be evicted in place of a live one.
+- **Part 4 — introspection.** \`size(): number\` (live entries only), \`keys(): string[]\` (live keys, least- to most-recently-used), and \`stats(): { hits: number; misses: number }\` (a \`get\` hit vs miss).
+
+Narrate the data-structure choices and the edge cases (missing key, already-expired, negative/zero TTL, capacity 1). Close with what you'd change for production (a real clock source, bounded memory, eager vs lazy sweep, persistence, concurrency).`,
+    interviewerNotes: `The flagship evolving-state problem — reveal ONE part at a time; do not hand them Part 3 until Part 1+2 run. Strong: (Part 1) trivial Map. (Part 2) store {value, expiresAt|null}; _isExpired helper comparing this.now(); lazy delete on get; has() checks liveness without touching recency. (Part 3) the classic JS-Map LRU trick — Map preserves insertion order, so delete+re-set on use moves a key to MRU, and map.keys().next().value is the LRU; evict in a while(size>maxSize) loop AFTER purging expired so a live entry isn't evicted while a dead one lingers. (Part 4) size/keys purge expired first; stats counts hit/miss in get. Reward: extending the entry shape and adding helpers instead of rewriting; stable public API as internals grow. Probe: "what does Map insertion order buy you?", "when do you expire — on write, on read, or on a timer?", "capacity 1 — walk me through it", "negative TTL?". Red flags: a second parallel structure that drifts from the Map; eager O(n) sweep every op with no acknowledgement of the cost; forgetting update-counts-as-use. Hint ladder: (a) "how do you know an entry is stale without a background timer?" (b) "which end of the Map is least-recently-used, and how did a key get there?" (c) "before evicting, what should you clear out first?". Production close: real monotonic clock, memory bounds, metrics, shard/Redis for scale.`,
+    starterCode: `class Cache {
+  constructor(options: { maxSize?: number; now?: () => number } = {}) {
+    // TODO: remember maxSize (default Infinity) and now (default () => Date.now())
+  }
+  set(key: string, value: number, ttlMs?: number): void {
+    // TODO
+  }
+  get(key: string): number | undefined {
+    // TODO
+    return undefined;
+  }
+  // Part 2:
+  has(key: string): boolean {
+    // TODO
+    return false;
+  }
+  delete(key: string): boolean {
+    // TODO
+    return false;
+  }
+  // Part 4:
+  size(): number {
+    // TODO
+    return 0;
+  }
+  keys(): string[] {
+    // TODO
+    return [];
+  }
+  stats(): { hits: number; misses: number } {
+    // TODO
+    return { hits: 0, misses: 0 };
+  }
+}
+`,
+    starterCodeJs: `class Cache {
+  constructor(options = {}) {
+    // options.maxSize (default Infinity), options.now (default () => Date.now())
+    // TODO
+  }
+  set(key, value, ttlMs) {
+    // TODO
+  }
+  get(key) {
+    // TODO
+    return undefined;
+  }
+  // Part 2:
+  has(key) {
+    // TODO
+    return false;
+  }
+  delete(key) {
+    // TODO
+    return false;
+  }
+  // Part 4:
+  size() {
+    // TODO
+    return 0;
+  }
+  keys() {
+    // TODO
+    return [];
+  }
+  stats() {
+    // TODO
+    return { hits: 0, misses: 0 };
+  }
+}
+`,
+    harness: `
+async function __harnessMain(): Promise<void> {
+  let T = 0;
+  const now = () => T;
+
+  // Part 1 — basics
+  const c = new Cache();
+  c.set("a", 1);
+  c.set("b", 2);
+  __check("get existing", c.get("a"), 1);
+  __check("get missing", c.get("z"), undefined);
+  c.set("a", 10);
+  __check("overwrite updates value", c.get("a"), 10);
+
+  // Part 2 — TTL
+  const t = new Cache({ now });
+  T = 0;
+  t.set("k", 5, 100);
+  __check("live before expiry", t.get("k"), 5);
+  T = 99;
+  __check("live just before expiry", t.get("k"), 5);
+  T = 100;
+  __check("expired at ttl boundary", t.get("k"), undefined);
+  T = 0;
+  t.set("perm", 7);
+  T = 10_000;
+  __check("no-ttl entry never expires", t.get("perm"), 7);
+  T = 0;
+  t.set("h", 1, 50);
+  __check("has() live", t.has("h"), true);
+  T = 50;
+  __check("has() expired", t.has("h"), false);
+  T = 0;
+  t.set("d", 9);
+  __check("delete present", t.delete("d"), true);
+  __check("delete missing", t.delete("d"), false);
+
+  // Part 3 — bounded size + LRU
+  T = 0;
+  const l = new Cache({ maxSize: 2, now });
+  l.set("a", 1);
+  l.set("b", 2);
+  l.get("a");            // a is now most-recently-used
+  l.set("c", 3);         // evicts LRU = b
+  __check("LRU evicts b", l.get("b"), undefined);
+  __check("LRU keeps a", l.get("a"), 1);
+  __check("LRU keeps c", l.get("c"), 3);
+
+  const l2 = new Cache({ maxSize: 2, now });
+  l2.set("a", 1);
+  l2.set("b", 2);
+  l2.set("a", 100);      // update counts as a use -> a is MRU
+  l2.set("c", 3);        // evicts b
+  __check("update refreshes recency", l2.get("b"), undefined);
+  __check("updated value survives", l2.get("a"), 100);
+
+  T = 0;
+  const l3 = new Cache({ maxSize: 2, now });
+  l3.set("old", 1, 100);
+  l3.set("keep", 2);
+  T = 100;               // "old" now expired
+  l3.set("new", 3);      // purge old first; do NOT evict the live "keep"
+  __check("expired purged, live kept", l3.get("keep"), 2);
+  __check("new entry present", l3.get("new"), 3);
+
+  const one = new Cache({ maxSize: 1, now });
+  one.set("x", 1);
+  one.set("y", 2);
+  __check("capacity 1 evicts", one.get("x"), undefined);
+  __check("capacity 1 keeps latest", one.get("y"), 2);
+
+  // Part 4 — introspection
+  const s = new Cache({ now });
+  T = 0;
+  s.set("a", 1);
+  s.get("a");            // hit
+  s.get("a");            // hit
+  s.get("nope");         // miss
+  __check("stats hits/misses", s.stats(), { hits: 2, misses: 1 });
+
+  const k = new Cache({ now });
+  T = 0;
+  k.set("a", 1);
+  k.set("b", 2);
+  k.set("c", 3);
+  k.get("a");            // a -> MRU ; order becomes b, c, a
+  __check("keys LRU->MRU order", k.keys(), ["b", "c", "a"]);
+  k.set("tmp", 9, 10);
+  T = 10;               // tmp expired
+  __check("keys excludes expired", k.keys(), ["b", "c", "a"]);
+  __check("size excludes expired", k.size(), 3);
+}
+`,
+  },
+  {
+    id: "backend-rate-limiter",
+    track: "backend",
+    type: "coding",
+    title: "Sliding-window rate limiter (builds in parts)",
+    est: 35,
+    prompt: `A service needs per-client rate limiting. Build it up in parts; the clock is injected as \`nowMs\` (always monotonically non-decreasing across calls) so the tests are deterministic.
+
+\`\`\`ts
+class RateLimiter {
+  // limit requests per rolling window of windowMs, per key.
+  constructor(limit: number, windowMs: number)
+  allow(key: string, nowMs: number): boolean
+}
+\`\`\`
+
+- **Part 1 — fixed count.** \`allow(key, nowMs)\` returns \`true\` and records the request if the key is under \`limit\`, else \`false\`. Each key is independent.
+- **Part 2 — true sliding window.** Make the window *rolling*, not a fixed bucket: a request counts only if it falls within the last \`windowMs\`. Keep a per-key log of timestamps (a list) and drop the ones that have aged out. A request exactly \`windowMs\` old has left the window.
+- **Part 3 — remaining.** \`remaining(key, nowMs): number\` — how many more requests the key could make right now.
+- **Part 4 — retry hint.** \`retryAfterMs(key, nowMs): number\` — if the key is currently allowed, \`0\`; otherwise the number of ms until the **oldest in-window request** ages out and frees a slot.
+
+Talk through: burst vs sustained rate, how this compares to a token bucket, what "1M keys" does to memory (and how you'd bound it / GC idle keys), and what breaks if a client's clock is skewed. Close with production notes (shared/atomic counter across a fleet, fail-open vs fail-closed).`,
+    interviewerNotes: `Distinct from the token-bucket question (openai-rate-limiter) on purpose: this is the sliding-window-LOG design — arrays of timestamps in a Map. Reveal parts progressively. Strong: Map<key, number[]>; a _prune(key, now) that drops timestamps <= now - windowMs (strictly outside the rolling window); allow = prune then (log.length < limit ? push(now), true : false); remaining = max(0, limit - prunedLen); retryAfterMs = allowed ? 0 : oldest + windowMs - now. Reward keeping the log sorted for free by exploiting monotonic nowMs (append-only), and pruning from the front. Probe: window boundary convention (is a request exactly windowMs old in or out — be consistent, tests treat it as OUT); memory unbounded with many keys -> lazy prune on access + evict empty logs, or a periodic sweep; token-bucket comparison (bucket = O(1) state, smooths bursts to a rate; log = exact count, more memory); clock skew (server clock is the truth; injected now makes it testable). Red flags: fixed-window counter presented as sliding (allows 2x burst at the boundary — call it out); recomputing by scanning all keys; off-by-one on the boundary. Hint ladder: (a) "what state per key lets you count requests in the last N ms exactly?" (b) "when a new request comes in, which old ones no longer matter?" (c) "for retry-after, which single timestamp determines when the next slot opens?".`,
+    starterCode: `class RateLimiter {
+  constructor(limit: number, windowMs: number) {
+    // TODO
+  }
+  allow(key: string, nowMs: number): boolean {
+    // TODO
+    return false;
+  }
+  // Part 3:
+  remaining(key: string, nowMs: number): number {
+    // TODO
+    return 0;
+  }
+  // Part 4:
+  retryAfterMs(key: string, nowMs: number): number {
+    // TODO
+    return 0;
+  }
+}
+`,
+    starterCodeJs: `class RateLimiter {
+  constructor(limit, windowMs) {
+    // TODO
+  }
+  allow(key, nowMs) {
+    // TODO
+    return false;
+  }
+  // Part 3:
+  remaining(key, nowMs) {
+    // TODO
+    return 0;
+  }
+  // Part 4:
+  retryAfterMs(key, nowMs) {
+    // TODO
+    return 0;
+  }
+}
+`,
+    harness: `
+async function __harnessMain(): Promise<void> {
+  const rl = new RateLimiter(3, 1000); // 3 requests / rolling 1000ms
+
+  __check("1st allowed", rl.allow("u", 0), true);
+  __check("2nd allowed", rl.allow("u", 100), true);
+  __check("3rd allowed", rl.allow("u", 200), true);
+  __check("4th denied (over limit)", rl.allow("u", 300), false);
+  __check("remaining is 0 when full", rl.remaining("u", 300), 0);
+  __check("retryAfter = oldest + window - now", rl.retryAfterMs("u", 300), 700);
+
+  // at t=1000 the first request (t=0) has aged out -> one slot frees
+  __check("slot frees as window slides", rl.allow("u", 1000), true);
+  __check("still limited right after", rl.allow("u", 1000), false);
+
+  // keys are independent
+  __check("other key independent", rl.allow("v", 1000), true);
+
+  // a fresh key: full budget, no wait
+  __check("fresh key remaining", rl.remaining("w", 5000), 3);
+  __check("fresh key retryAfter 0", rl.retryAfterMs("w", 5000), 0);
+
+  // partial usage reports remaining accurately
+  const r2 = new RateLimiter(5, 100);
+  r2.allow("k", 0);
+  r2.allow("k", 10);
+  __check("remaining after 2 of 5", r2.remaining("k", 20), 3);
+  __check("allowed when under limit", r2.allow("k", 20), true);
+  __check("remaining after 3 of 5", r2.remaining("k", 20), 2);
+
+  // window boundary: a request exactly windowMs old has left the window
+  const r3 = new RateLimiter(1, 100);
+  __check("boundary: first ok", r3.allow("k", 0), true);
+  __check("boundary: 99ms still blocked", r3.allow("k", 99), false);
+  __check("boundary: 100ms frees", r3.allow("k", 100), true);
+}
+`,
+  },
+  {
+    id: "backend-metrics-aggregator",
+    track: "backend",
+    type: "coding",
+    title: "Event metrics aggregator over time windows (builds in parts)",
+    est: 35,
+    prompt: `Build a lightweight in-memory time-series metrics store: events stream in with timestamps, and callers query aggregates over time windows. Grow it in parts.
+
+\`\`\`ts
+class MetricsStore {
+  // value defaults to 1 (so a plain event is a counter tick); user is optional.
+  record(name: string, ts: number, value?: number, user?: string): void
+  count(name: string, start: number, end: number): number   // events in [start, end)
+}
+\`\`\`
+
+All windows are half-open **[start, end)** — inclusive start, exclusive end.
+
+- **Part 1 — record & count.** Store events per name; \`count\` returns how many landed in the window. Missing name -> \`0\`.
+- **Part 2 — sum & average.** \`sum(name, start, end)\` totals the values in the window; \`average(name, start, end)\` is sum/count (\`0\` when the window is empty).
+- **Part 3 — unique users.** \`uniqueUsers(name, start, end)\` — the number of distinct \`user\`s among events in the window (events recorded without a user don't count).
+- **Part 4 — top events.** \`topEvents(start, end, k)\` — the \`k\` event names with the most events in the window, most-frequent first; break ties alphabetically.
+
+Events can arrive out of order. Narrate the storage choice (\`Map<name, event[]>\` + filter is fine at this scale) and — when asked to scale — how you'd pre-aggregate into time buckets or keep the arrays sorted for binary-searched ranges. Close with production notes (bounded retention, pre-aggregation, approximate distinct counts like HyperLogLog).`,
+    interviewerNotes: `Time-windowed aggregation — maps + lists + a set, evolving. Reveal parts progressively. Strong: Map<name, Array<{ts,value,user}>>; record defaults value to 1 and user to null; a shared _inWindow(name,start,end) helper filtering ts>=start && ts<end reused by every query; sum via reduce; average guards divide-by-zero -> 0; uniqueUsers builds a Set skipping null users; topEvents counts each name in the window, sorts by count desc then name asc, slices k. Reward the reused window helper and correct half-open semantics. Probe: out-of-order arrivals (filter handles it; sorted-insert + binary search is the scale answer); what to pre-aggregate if this were 1B events (fixed time buckets: minute/hour rollups, trade granularity for memory); distinct-count at scale (HLL, approximate); rounding for average (keep raw, round at the edge). Red flags: inclusive-inclusive or off-by-one window; per-event recomputation of everything; forgetting missing-name -> 0/empty. Hint ladder: (a) "what's the one filtering step every query shares?" (b) "average of an empty window — what do you return?" (c) "for top-k, do you need a full sort of all names or just the ones with events?".`,
+    starterCode: `class MetricsStore {
+  record(name: string, ts: number, value: number = 1, user?: string): void {
+    // TODO
+  }
+  count(name: string, start: number, end: number): number {
+    // TODO
+    return 0;
+  }
+  // Part 2:
+  sum(name: string, start: number, end: number): number {
+    // TODO
+    return 0;
+  }
+  average(name: string, start: number, end: number): number {
+    // TODO
+    return 0;
+  }
+  // Part 3:
+  uniqueUsers(name: string, start: number, end: number): number {
+    // TODO
+    return 0;
+  }
+  // Part 4:
+  topEvents(start: number, end: number, k: number): string[] {
+    // TODO
+    return [];
+  }
+}
+`,
+    starterCodeJs: `class MetricsStore {
+  record(name, ts, value = 1, user) {
+    // TODO
+  }
+  count(name, start, end) {
+    // TODO
+    return 0;
+  }
+  // Part 2:
+  sum(name, start, end) {
+    // TODO
+    return 0;
+  }
+  average(name, start, end) {
+    // TODO
+    return 0;
+  }
+  // Part 3:
+  uniqueUsers(name, start, end) {
+    // TODO
+    return 0;
+  }
+  // Part 4:
+  topEvents(start, end, k) {
+    // TODO
+    return [];
+  }
+}
+`,
+    harness: `
+async function __harnessMain(): Promise<void> {
+  // Part 1 — record & count
+  const m = new MetricsStore();
+  m.record("login", 10);
+  m.record("login", 20);
+  m.record("login", 100);
+  __check("count in [0,50)", m.count("login", 0, 50), 2);
+  __check("count is half-open", m.count("login", 10, 20), 1); // 10 in, 20 out
+  __check("count all", m.count("login", 0, 1000), 3);
+  __check("count missing name", m.count("nope", 0, 1000), 0);
+
+  // Part 2 — sum & average (values arrive out of order too)
+  m.record("purchase", 25, 300);
+  m.record("purchase", 5, 100);
+  m.record("purchase", 15, 200);
+  __check("sum all", m.sum("purchase", 0, 100), 600);
+  __check("sum window", m.sum("purchase", 10, 30), 500); // 200 + 300
+  __check("average", m.average("purchase", 0, 100), 200);
+  __check("average empty window -> 0", m.average("purchase", 1000, 2000), 0);
+
+  // Part 3 — unique users
+  m.record("view", 1, undefined, "alice");
+  m.record("view", 2, undefined, "bob");
+  m.record("view", 3, undefined, "alice");
+  m.record("view", 50, undefined, "carol");
+  m.record("view", 60); // no user -> not counted
+  __check("unique users in window", m.uniqueUsers("view", 0, 10), 2);
+  __check("unique users all", m.uniqueUsers("view", 0, 1000), 3);
+
+  // Part 4 — top events (login=3, purchase=3, view=5 in [0,1000))
+  __check("topEvents k=2 (tie -> alpha)", m.topEvents(0, 1000, 2), ["view", "login"]);
+  __check("topEvents k=1", m.topEvents(0, 1000, 1), ["view"]);
+  __check("topEvents narrow window", m.topEvents(0, 4, 3), ["view"]); // only view has events in [0,4)
+}
+`,
+  },
+  {
+    id: "backend-booking",
+    track: "backend",
+    type: "coding",
+    title: "Resource booking with overlap & capacity (builds in parts)",
+    est: 40,
+    prompt: `Build a booking system for time-based resources (rooms, GPU slots, tables). Intervals are half-open **[start, end)**, so \`[0,10)\` and \`[10,20)\` do **not** overlap. Grow it in parts.
+
+\`\`\`ts
+class BookingSystem {
+  constructor(capacity?: number)   // max concurrent bookings per resource; default 1
+  // Returns a booking id, or null if it can't be booked.
+  book(resource: string, user: string, start: number, end: number): string | null
+  isAvailable(resource: string, start: number, end: number): boolean
+}
+\`\`\`
+
+- **Part 1 — book & availability.** With the default capacity of 1, \`book\` succeeds only if the requested window doesn't overlap an existing booking on that resource; return a unique id on success, \`null\` on conflict (or on an invalid \`start >= end\`). \`isAvailable\` reports whether a window could be booked. Resources are independent.
+- **Part 2 — cancel & list.** \`cancel(id): boolean\` frees the slot. \`listByResource(resource)\` returns the resource's bookings \`{ id, user, start, end }\` sorted by start (then end). \`listByUser(user)\` returns that user's booking ids in creation order.
+- **Part 3 — capacity > 1.** Honor the constructor \`capacity\`: a resource may hold up to \`capacity\` **concurrently overlapping** bookings. A new booking is allowed only if, at every instant it covers, fewer than \`capacity\` bookings already overlap. \`isAvailable\` reflects this.
+
+Narrate how you detect overlap, and for Part 3 how you check the *maximum concurrency* across the requested window (a sweep over start/end events is the clean way). Discuss what you'd add next — a waitlist, temporary holds that expire during checkout, idempotent confirms — and the production concerns (atomic reserve step / no double-book under concurrency, persistence).`,
+    interviewerNotes: `Interval overlap + capacity, evolving. Note: systems-booking is the DESIGN version; this is the coding version. Reveal parts progressively. Strong: store bookings in a Map<id, {resource,user,start,end}>; overlap of [s,e) and [bs,be) is s < be && bs < e (touching endpoints don't conflict). Part 1 capacity-1 = reject if any overlap. Part 3 general: compute max concurrency across the requested window via a sweep — collect (max(bstart,s),+1) and (min(bend,e),-1) for bookings overlapping [s,e), sort by coordinate processing -1 before +1 at ties (so half-open touching doesn't count), track running max; available iff max < capacity. Reward: half-open handled consistently; capacity-1 falling out of the general check; sorted list output; ids stable/unique. Probe: invalid interval (start>=end -> null); why touching intervals are fine; the concurrency invariant ("at no instant may > capacity overlap"); the concurrency/atomicity story for production (check-then-book is a TOCTOU race — the real system needs the reserve to be atomic). Red flags: comparing only endpoints not the whole window; counting touching intervals as overlap; O(n) per check with no path to better; capacity handled by a separate ad-hoc branch that diverges from Part 1. Hint ladder: (a) "what's the boolean test for two half-open intervals overlapping?" (b) "with capacity C, it's no longer yes/no per pair — what quantity across the window matters?" (c) "sweep the start(+1)/end(-1) events — what's the max running sum you'll tolerate?".`,
+    starterCode: `class BookingSystem {
+  constructor(capacity: number = 1) {
+    // TODO
+  }
+  book(resource: string, user: string, start: number, end: number): string | null {
+    // TODO
+    return null;
+  }
+  isAvailable(resource: string, start: number, end: number): boolean {
+    // TODO
+    return false;
+  }
+  // Part 2:
+  cancel(id: string): boolean {
+    // TODO
+    return false;
+  }
+  listByResource(resource: string): Array<{ id: string; user: string; start: number; end: number }> {
+    // TODO
+    return [];
+  }
+  listByUser(user: string): string[] {
+    // TODO
+    return [];
+  }
+}
+`,
+    starterCodeJs: `class BookingSystem {
+  constructor(capacity = 1) {
+    // TODO
+  }
+  book(resource, user, start, end) {
+    // TODO
+    return null;
+  }
+  isAvailable(resource, start, end) {
+    // TODO
+    return false;
+  }
+  // Part 2:
+  cancel(id) {
+    // TODO
+    return false;
+  }
+  listByResource(resource) {
+    // TODO
+    return [];
+  }
+  listByUser(user) {
+    // TODO
+    return [];
+  }
+}
+`,
+    harness: `
+async function __harnessMain(): Promise<void> {
+  // Part 1 — book & availability (capacity 1)
+  const bs = new BookingSystem();
+  const a = bs.book("room1", "alice", 0, 10);
+  __check("first booking gets an id", typeof a, "string");
+  __check("overlap rejected", bs.book("room1", "bob", 5, 15), null);
+  __check("touching interval ok", typeof bs.book("room1", "bob", 10, 20), "string");
+  __check("other resource independent", typeof bs.book("room2", "carol", 0, 10), "string");
+  __check("invalid interval rejected", bs.book("room1", "x", 5, 5), null);
+  __check("isAvailable false on overlap", bs.isAvailable("room1", 5, 8), false);
+  __check("isAvailable true on gap", bs.isAvailable("room1", 20, 25), true);
+
+  // Part 2 — cancel & list
+  __check("cancel frees slot", bs.cancel(a as string), true);
+  __check("cancel missing id", bs.cancel("nope"), false);
+  __check("rebook after cancel", typeof bs.book("room1", "dave", 0, 5), "string");
+
+  const q = new BookingSystem();
+  q.book("r", "u1", 30, 40);
+  q.book("r", "u2", 0, 10);
+  q.book("r", "u3", 15, 20);
+  __check("listByResource sorted by start", q.listByResource("r").map((b) => b.start), [0, 15, 30]);
+  __check("listByResource shape", q.listByResource("r")[0].user, "u2");
+
+  const u = new BookingSystem();
+  const s1 = u.book("r1", "sam", 0, 5) as string;
+  const s2 = u.book("r2", "sam", 0, 5) as string;
+  u.book("r1", "pat", 10, 15);
+  __check("listByUser in creation order", u.listByUser("sam"), [s1, s2]);
+
+  // Part 3 — capacity > 1
+  const cap = new BookingSystem(2);
+  __check("cap2 first overlap ok", typeof cap.book("gpu", "a", 0, 10), "string");
+  __check("cap2 second overlap ok", typeof cap.book("gpu", "b", 0, 10), "string");
+  __check("cap2 third overlap rejected", cap.book("gpu", "c", 0, 10), null);
+  __check("cap2 at capacity not available", cap.isAvailable("gpu", 5, 8), false);
+  __check("cap2 non-overlapping ok", typeof cap.book("gpu", "d", 10, 20), "string");
+  __check("cap2 partial-overlap respects max concurrency", cap.book("gpu", "e", 8, 12), null);
+}
+`,
+  },
+  {
+    id: "backend-scheduler",
+    track: "backend",
+    type: "coding",
+    title: "Delayed job scheduler (builds in parts)",
+    est: 35,
+    prompt: `Build an in-memory scheduler for delayed work. There's no real timer — the caller drives time by passing \`now\` to \`getDue\`. Grow it in parts.
+
+\`\`\`ts
+class Scheduler {
+  schedule(id: string, runAt: number, payload: string): void
+  // Returns the payloads of all tasks due at or before now, in run order,
+  // and removes/advances them so each fires once per due time.
+  getDue(now: number): string[]
+}
+\`\`\`
+
+- **Part 1 — schedule & drain.** \`schedule\` registers a one-shot task; \`getDue(now)\` returns the payloads of tasks with \`runAt <= now\`, earliest \`runAt\` first, and removes them (a one-shot fires exactly once). \`pending(): number\` reports how many tasks remain.
+- **Part 2 — cancel.** \`cancel(id): boolean\` removes a task before it fires. Re-scheduling an existing id replaces it.
+- **Part 3 — priorities.** \`schedule(id, runAt, payload, priority?)\` (default \`0\`). When multiple tasks are due at the same \`runAt\`, higher priority fires first; ties keep insertion order.
+- **Part 4 — recurring.** \`scheduleRecurring(id, firstRunAt, intervalMs, payload)\` fires at \`firstRunAt\`, then every \`intervalMs\`. In one \`getDue\` call a recurring task fires **at most once** even if several intervals were missed — after firing, its next run is the first multiple strictly after \`now\`.
+
+Narrate the ordering rules and, when asked to scale, why a min-heap (or a sorted structure) keyed on \`runAt\` beats scanning every task each tick. Close with production notes (a real timer/clock, durability so scheduled work survives a restart, retries/backoff on failure).`,
+    interviewerNotes: `Delayed-work scheduler — time-ordered state that evolves. Reveal parts progressively; a scan-and-filter over a Map is fine at this scale, but they should NAME the heap as the scale answer. Strong: Map<id, {id,runAt,payload,priority,intervalMs|null,seq}> with a monotonic seq for stable ties; getDue filters runAt<=now, sorts by runAt asc, then priority desc, then seq asc; one-shots are deleted after firing, recurring advance runAt to firstRun + k*interval (smallest strictly > now) firing once even if multiple intervals elapsed; pending = map size (recurring stay pending). Part 2: cancel = map.delete; re-schedule replaces (same id key). Reward: consistent comparator across parts; the missed-interval "fire once, catch up next" rule; not firing a recurring task multiple times in one drain. Probe: ordering tie-breaks; what "fires once" means for a recurring task after a long gap; heap vs scan complexity (getDue is O(n log n) scan vs O(k log n) heap pops); durability for production. Red flags: recurring task that fires N times for N missed intervals in a single getDue; unstable ordering; forgetting to remove fired one-shots (they'd re-fire). Hint ladder: (a) "how do you return due tasks in the right order?" (b) "a recurring task hasn't been polled for 10 intervals — how many times should it fire this call, and when's its next run?" (c) "at scale, what structure avoids scanning every task each tick?".`,
+    starterCode: `class Scheduler {
+  schedule(id: string, runAt: number, payload: string, priority: number = 0): void {
+    // TODO
+  }
+  getDue(now: number): string[] {
+    // TODO
+    return [];
+  }
+  // Part 1:
+  pending(): number {
+    // TODO
+    return 0;
+  }
+  // Part 2:
+  cancel(id: string): boolean {
+    // TODO
+    return false;
+  }
+  // Part 4:
+  scheduleRecurring(id: string, firstRunAt: number, intervalMs: number, payload: string): void {
+    // TODO
+  }
+}
+`,
+    starterCodeJs: `class Scheduler {
+  schedule(id, runAt, payload, priority = 0) {
+    // TODO
+  }
+  getDue(now) {
+    // TODO
+    return [];
+  }
+  // Part 1:
+  pending() {
+    // TODO
+    return 0;
+  }
+  // Part 2:
+  cancel(id) {
+    // TODO
+    return false;
+  }
+  // Part 4:
+  scheduleRecurring(id, firstRunAt, intervalMs, payload) {
+    // TODO
+  }
+}
+`,
+    harness: `
+async function __harnessMain(): Promise<void> {
+  // Part 1 — schedule & drain
+  const s = new Scheduler();
+  s.schedule("a", 100, "task-a");
+  s.schedule("b", 50, "task-b");
+  s.schedule("c", 200, "task-c");
+  __check("nothing due yet", s.getDue(10), []);
+  __check("due in run order", s.getDue(150), ["task-b", "task-a"]);
+  __check("one-shots removed after firing", s.getDue(150), []);
+  __check("later task still pending", s.pending(), 1);
+  __check("drain the rest", s.getDue(200), ["task-c"]);
+  __check("pending now 0", s.pending(), 0);
+
+  // Part 2 — cancel & replace
+  const s2 = new Scheduler();
+  s2.schedule("x", 10, "x");
+  s2.schedule("y", 20, "y");
+  __check("cancel returns true", s2.cancel("x"), true);
+  __check("cancel missing false", s2.cancel("zzz"), false);
+  s2.schedule("y", 5, "y2"); // replace y
+  __check("reschedule replaces", s2.getDue(100), ["y2"]);
+
+  // Part 3 — priorities at the same runAt
+  const s3 = new Scheduler();
+  s3.schedule("lo", 10, "lo", 1);
+  s3.schedule("hi", 10, "hi", 5);
+  s3.schedule("mid", 10, "mid", 3);
+  __check("higher priority first", s3.getDue(10), ["hi", "mid", "lo"]);
+
+  // Part 4 — recurring
+  const s4 = new Scheduler();
+  s4.scheduleRecurring("beat", 0, 100, "beat");
+  __check("recurring fires at first run", s4.getDue(0), ["beat"]);
+  __check("not due before next interval", s4.getDue(50), []);
+  __check("fires next interval", s4.getDue(100), ["beat"]);
+  __check("recurring stays pending", s4.pending(), 1);
+  __check("missed intervals fire once", s4.getDue(1000), ["beat"]);
+  __check("next run is after now", s4.getDue(1050), []);
+  __check("fires at the caught-up run", s4.getDue(1100), ["beat"]);
+}
+`,
+  },
+  {
+    id: "backend-session-store",
+    track: "backend",
+    type: "coding",
+    title: "Conversation/session store with token budget (builds in parts)",
+    est: 35,
+    prompt: `Very Cursor-flavored: build the store behind an AI chat's conversation memory. Messages accumulate per session; callers fetch history under a token budget; idle sessions expire. Grow it in parts. The clock is injected so expiry is testable.
+
+\`\`\`ts
+class SessionStore {
+  constructor(options?: { idleTtlMs?: number; now?: () => number })
+  addMessage(session: string, role: string, content: string, tokens: number): void
+  getHistory(session: string): Array<{ role: string; content: string; tokens: number }>
+}
+\`\`\`
+
+- **Part 1 — append & read.** \`addMessage\` appends to a session (creating it on first use); \`getHistory\` returns its messages in order. Unknown session -> \`[]\`. Add \`tokenCount(session): number\` (sum of the session's message tokens).
+- **Part 2 — token budget.** \`getHistory(session, maxTokens?)\` — when \`maxTokens\` is given, return only the **most recent** messages whose token total fits within the budget, still in chronological order. Take newest-first until the next message wouldn't fit; if even the newest single message exceeds the budget, return \`[]\`.
+- **Part 3 — clear.** \`clear(session): boolean\` drops a session.
+- **Part 4 — idle expiry.** With \`idleTtlMs\` set, a session expires once \`now() - lastActivity >= idleTtlMs\` (any \`addMessage\` counts as activity and refreshes it). An expired session reads as empty (\`getHistory\` -> \`[]\`, \`tokenCount\` -> \`0\`).
+
+Narrate the trade-off between last-N and token-budget truncation for LLM context, and what production would add (summarizing older turns instead of dropping them, real clock, per-session size caps, persistence). Close on how this maps to Cursor's own chat-context economics.`,
+    interviewerNotes: `Session/conversation memory with a token budget and TTL — maps + lists + injected clock, evolving. On-brand for Cursor. Reveal parts progressively. Strong: Map<session, {msgs: Msg[], lastActive: number}>; a _live(session) helper that lazily expires (now()-lastActive >= idleTtlMs -> delete, return undefined) reused by every read; addMessage refreshes lastActive and appends; getHistory with no budget returns a copy in order; with a budget, walk from the newest accumulating tokens, stop before exceeding, reverse to chronological; newest-alone-too-big -> []. tokenCount sums live msgs. Reward: the reused liveness helper; budget truncation from the correct (recent) end; copying so callers can't mutate internal state. Probe: budget boundary (exact fit included; single oversized newest -> []); TTL boundary (>= vs >, and that add refreshes it); last-N vs token-budget for real LLM context (token-budget matches the model's real limit; last-N is cruder); production (summarize-don't-drop, durable store, size caps). Red flags: truncating from the OLD end (drops recent context — wrong); off-by-one on the budget or TTL; expiry that requires a background sweep to work (should be lazy on access). Hint ladder: (a) "which end of the history do you keep when you must cut?" (b) "the newest message alone blows the budget — what comes back?" (c) "how do you expire an idle session without a timer thread?".`,
+    starterCode: `class SessionStore {
+  constructor(options: { idleTtlMs?: number; now?: () => number } = {}) {
+    // TODO: idleTtlMs (default Infinity), now (default () => Date.now())
+  }
+  addMessage(session: string, role: string, content: string, tokens: number): void {
+    // TODO
+  }
+  getHistory(session: string, maxTokens?: number): Array<{ role: string; content: string; tokens: number }> {
+    // TODO
+    return [];
+  }
+  // Part 1:
+  tokenCount(session: string): number {
+    // TODO
+    return 0;
+  }
+  // Part 3:
+  clear(session: string): boolean {
+    // TODO
+    return false;
+  }
+}
+`,
+    starterCodeJs: `class SessionStore {
+  constructor(options = {}) {
+    // options.idleTtlMs (default Infinity), options.now (default () => Date.now())
+    // TODO
+  }
+  addMessage(session, role, content, tokens) {
+    // TODO
+  }
+  getHistory(session, maxTokens) {
+    // TODO
+    return [];
+  }
+  // Part 1:
+  tokenCount(session) {
+    // TODO
+    return 0;
+  }
+  // Part 3:
+  clear(session) {
+    // TODO
+    return false;
+  }
+}
+`,
+    harness: `
+async function __harnessMain(): Promise<void> {
+  // Part 1 — append & read
+  const ss = new SessionStore();
+  ss.addMessage("s1", "user", "hi", 5);
+  ss.addMessage("s1", "assistant", "hello", 8);
+  __check("history in order", ss.getHistory("s1").map((m) => m.content), ["hi", "hello"]);
+  __check("token count", ss.tokenCount("s1"), 13);
+  __check("unknown session empty", ss.getHistory("none"), []);
+
+  // Part 2 — token budget (keep the most recent that fit)
+  const b = new SessionStore();
+  b.addMessage("s", "user", "m1", 10);
+  b.addMessage("s", "assistant", "m2", 10);
+  b.addMessage("s", "user", "m3", 10);
+  b.addMessage("s", "assistant", "m4", 10);
+  __check("budget keeps newest that fit", b.getHistory("s", 25).map((m) => m.content), ["m3", "m4"]);
+  __check("budget exact fit", b.getHistory("s", 20).map((m) => m.content), ["m3", "m4"]);
+  __check("budget covers all", b.getHistory("s", 100).map((m) => m.content), ["m1", "m2", "m3", "m4"]);
+  __check("budget too small for any", b.getHistory("s", 5), []);
+
+  // Part 3 — clear
+  __check("clear returns true", b.clear("s"), true);
+  __check("cleared reads empty", b.getHistory("s"), []);
+
+  // Part 4 — idle expiry
+  let T = 0;
+  const now = () => T;
+  const e = new SessionStore({ idleTtlMs: 1000, now });
+  T = 0;
+  e.addMessage("s", "user", "hi", 3);
+  T = 500;
+  __check("live before ttl", e.getHistory("s").map((m) => m.content), ["hi"]);
+  e.addMessage("s", "user", "again", 4); // refreshes lastActivity to 500
+  T = 1499;
+  __check("refresh extends life", e.tokenCount("s"), 7);
+  T = 1500;
+  __check("expired after idle ttl", e.getHistory("s"), []);
+  __check("expired token count 0", e.tokenCount("s"), 0);
+}
 `,
   },
 ];

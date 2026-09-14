@@ -335,6 +335,374 @@ function canFinish(numCourses: number, prerequisites: number[][]): boolean {
   return done === numCourses;
 }
 `,
+
+  // ── Redo track ──
+  "redo-othello": `
+type Player = "B" | "W";
+type Cell = Player | ".";
+type Board = Cell[][];
+const N = 8;
+const DIRS: ReadonlyArray<readonly [number, number]> = [
+  [-1, -1], [-1, 0], [-1, 1], [0, -1], [0, 1], [1, -1], [1, 0], [1, 1],
+];
+function opponent(p: Player): Player { return p === "B" ? "W" : "B"; }
+function inBounds(r: number, c: number): boolean { return r >= 0 && r < N && c >= 0 && c < N; }
+function initialBoard(): Board {
+  const b: Board = Array.from({ length: N }, () => Array<Cell>(N).fill("."));
+  b[3][3] = "W"; b[3][4] = "B"; b[4][3] = "B"; b[4][4] = "W";
+  return b;
+}
+function flipsInDir(board: Board, player: Player, r: number, c: number, dr: number, dc: number): Array<[number, number]> {
+  const opp = opponent(player);
+  const out: Array<[number, number]> = [];
+  let nr = r + dr, nc = c + dc;
+  while (inBounds(nr, nc) && board[nr][nc] === opp) { out.push([nr, nc]); nr += dr; nc += dc; }
+  if (out.length > 0 && inBounds(nr, nc) && board[nr][nc] === player) return out;
+  return [];
+}
+function legalMoves(board: Board, player: Player): Array<[number, number]> {
+  const moves: Array<[number, number]> = [];
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+    if (board[r][c] !== ".") continue;
+    for (const [dr, dc] of DIRS) {
+      if (flipsInDir(board, player, r, c, dr, dc).length > 0) { moves.push([r, c]); break; }
+    }
+  }
+  return moves;
+}
+function applyMove(board: Board, player: Player, r: number, c: number): Board {
+  const nb: Board = board.map((row) => row.slice());
+  nb[r][c] = player;
+  for (const [dr, dc] of DIRS) for (const [fr, fc] of flipsInDir(board, player, r, c, dr, dc)) nb[fr][fc] = player;
+  return nb;
+}
+function isGameOver(board: Board): boolean {
+  return legalMoves(board, "B").length === 0 && legalMoves(board, "W").length === 0;
+}
+function score(board: Board): { B: number; W: number } {
+  let B = 0, W = 0;
+  for (const row of board) for (const cell of row) { if (cell === "B") B++; else if (cell === "W") W++; }
+  return { B, W };
+}
+`,
+
+  "redo-build-tree": `
+interface TreeNode { val: number; left: TreeNode | null; right: TreeNode | null; }
+function buildTree(preorder: number[], inorder: number[]): TreeNode | null {
+  const idx = new Map<number, number>();
+  inorder.forEach((v, i) => idx.set(v, i));
+  let pre = 0;
+  const build = (lo: number, hi: number): TreeNode | null => {
+    if (lo > hi) return null;
+    const val = preorder[pre++];
+    const mid = idx.get(val)!;
+    const node: TreeNode = { val, left: null, right: null };
+    node.left = build(lo, mid - 1);
+    node.right = build(mid + 1, hi);
+    return node;
+  };
+  return build(0, inorder.length - 1);
+}
+`,
+
+  "redo-increasing-paths": `
+function countPaths(grid: number[][]): number {
+  const MOD = 1_000_000_007;
+  const m = grid.length, n = grid[0].length;
+  const memo: number[][] = Array.from({ length: m }, () => Array<number>(n).fill(-1));
+  const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  const dfs = (r: number, c: number): number => {
+    if (memo[r][c] !== -1) return memo[r][c];
+    let total = 1;
+    for (const [dr, dc] of dirs) {
+      const nr = r + dr, nc = c + dc;
+      if (nr >= 0 && nr < m && nc >= 0 && nc < n && grid[nr][nc] > grid[r][c]) total = (total + dfs(nr, nc)) % MOD;
+    }
+    memo[r][c] = total;
+    return total;
+  };
+  let ans = 0;
+  for (let r = 0; r < m; r++) for (let c = 0; c < n; c++) ans = (ans + dfs(r, c)) % MOD;
+  return ans;
+}
+`,
+
+  "redo-bishop-bfs": `
+function minBishopMoves(start: number, target: number): number {
+  if (start === target) return 0;
+  const dist = new Array(64).fill(-1);
+  dist[start] = 0;
+  const q: number[] = [start];
+  const dirs = [[-1, -1], [-1, 1], [1, -1], [1, 1]];
+  while (q.length) {
+    const cur = q.shift()!;
+    const r = Math.floor(cur / 8), c = cur % 8;
+    for (const [dr, dc] of dirs) {
+      let nr = r + dr, nc = c + dc;
+      while (nr >= 0 && nr < 8 && nc >= 0 && nc < 8) {
+        const ni = nr * 8 + nc;
+        if (dist[ni] === -1) {
+          dist[ni] = dist[cur] + 1;
+          if (ni === target) return dist[ni];
+          q.push(ni);
+        }
+        nr += dr; nc += dc;
+      }
+    }
+  }
+  return dist[target];
+}
+`,
+
+  // ── Backend (stateful, evolving) track ──
+  "backend-cache-ttl-lru": `
+class Cache {
+  private store = new Map<string, { value: number; expiresAt: number | null }>();
+  private maxSize: number;
+  private now: () => number;
+  private hits = 0;
+  private misses = 0;
+  constructor(options: { maxSize?: number; now?: () => number } = {}) {
+    this.maxSize = options.maxSize ?? Infinity;
+    this.now = options.now ?? (() => Date.now());
+  }
+  private isExpired(e: { expiresAt: number | null }): boolean {
+    return e.expiresAt !== null && this.now() >= e.expiresAt;
+  }
+  private purge(): void {
+    for (const [k, e] of this.store) if (this.isExpired(e)) this.store.delete(k);
+  }
+  set(key: string, value: number, ttlMs?: number): void {
+    this.purge();
+    if (this.store.has(key)) this.store.delete(key);
+    const expiresAt = ttlMs != null ? this.now() + ttlMs : null;
+    this.store.set(key, { value, expiresAt });
+    while (this.store.size > this.maxSize) {
+      const oldest = this.store.keys().next().value as string;
+      this.store.delete(oldest);
+    }
+  }
+  get(key: string): number | undefined {
+    const e = this.store.get(key);
+    if (!e || this.isExpired(e)) {
+      if (e) this.store.delete(key);
+      this.misses++;
+      return undefined;
+    }
+    this.store.delete(key);
+    this.store.set(key, e);
+    this.hits++;
+    return e.value;
+  }
+  has(key: string): boolean {
+    const e = this.store.get(key);
+    if (!e) return false;
+    if (this.isExpired(e)) { this.store.delete(key); return false; }
+    return true;
+  }
+  delete(key: string): boolean {
+    return this.store.delete(key);
+  }
+  size(): number { this.purge(); return this.store.size; }
+  keys(): string[] { this.purge(); return [...this.store.keys()]; }
+  stats(): { hits: number; misses: number } { return { hits: this.hits, misses: this.misses }; }
+}
+`,
+
+  "backend-rate-limiter": `
+class RateLimiter {
+  private limit: number;
+  private windowMs: number;
+  private log = new Map<string, number[]>();
+  constructor(limit: number, windowMs: number) {
+    this.limit = limit;
+    this.windowMs = windowMs;
+  }
+  private prune(key: string, nowMs: number): number[] {
+    const arr = this.log.get(key) ?? [];
+    const cutoff = nowMs - this.windowMs;
+    let i = 0;
+    while (i < arr.length && arr[i] <= cutoff) i++;
+    const kept = i > 0 ? arr.slice(i) : arr;
+    this.log.set(key, kept);
+    return kept;
+  }
+  allow(key: string, nowMs: number): boolean {
+    const arr = this.prune(key, nowMs);
+    if (arr.length < this.limit) { arr.push(nowMs); return true; }
+    return false;
+  }
+  remaining(key: string, nowMs: number): number {
+    return Math.max(0, this.limit - this.prune(key, nowMs).length);
+  }
+  retryAfterMs(key: string, nowMs: number): number {
+    const arr = this.prune(key, nowMs);
+    if (arr.length < this.limit) return 0;
+    return arr[0] + this.windowMs - nowMs;
+  }
+}
+`,
+
+  "backend-metrics-aggregator": `
+interface Ev { ts: number; value: number; user: string | null; }
+class MetricsStore {
+  private events = new Map<string, Ev[]>();
+  record(name: string, ts: number, value: number = 1, user?: string): void {
+    if (!this.events.has(name)) this.events.set(name, []);
+    this.events.get(name)!.push({ ts, value, user: user ?? null });
+  }
+  private inWindow(name: string, start: number, end: number): Ev[] {
+    return (this.events.get(name) ?? []).filter((e) => e.ts >= start && e.ts < end);
+  }
+  count(name: string, start: number, end: number): number {
+    return this.inWindow(name, start, end).length;
+  }
+  sum(name: string, start: number, end: number): number {
+    return this.inWindow(name, start, end).reduce((s, e) => s + e.value, 0);
+  }
+  average(name: string, start: number, end: number): number {
+    const w = this.inWindow(name, start, end);
+    if (w.length === 0) return 0;
+    return w.reduce((s, e) => s + e.value, 0) / w.length;
+  }
+  uniqueUsers(name: string, start: number, end: number): number {
+    const set = new Set<string>();
+    for (const e of this.inWindow(name, start, end)) if (e.user !== null) set.add(e.user);
+    return set.size;
+  }
+  topEvents(start: number, end: number, k: number): string[] {
+    const counts: Array<[string, number]> = [];
+    for (const name of this.events.keys()) {
+      const c = this.count(name, start, end);
+      if (c > 0) counts.push([name, c]);
+    }
+    counts.sort((a, b) => (b[1] - a[1]) || a[0].localeCompare(b[0]));
+    return counts.slice(0, k).map((x) => x[0]);
+  }
+}
+`,
+
+  "backend-booking": `
+interface Booking { id: string; resource: string; user: string; start: number; end: number; }
+class BookingSystem {
+  private capacity: number;
+  private bookings = new Map<string, Booking>();
+  private seq = 0;
+  constructor(capacity: number = 1) { this.capacity = capacity; }
+  private forResource(resource: string): Booking[] {
+    return [...this.bookings.values()].filter((b) => b.resource === resource);
+  }
+  private maxConcurrency(resource: string, s: number, e: number): number {
+    const pts: Array<[number, number]> = [];
+    for (const b of this.forResource(resource)) {
+      if (b.end <= s || b.start >= e) continue;
+      pts.push([Math.max(b.start, s), 1]);
+      pts.push([Math.min(b.end, e), -1]);
+    }
+    pts.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    let cur = 0, mx = 0;
+    for (const [, d] of pts) { cur += d; if (cur > mx) mx = cur; }
+    return mx;
+  }
+  isAvailable(resource: string, start: number, end: number): boolean {
+    if (start >= end) return false;
+    return this.maxConcurrency(resource, start, end) < this.capacity;
+  }
+  book(resource: string, user: string, start: number, end: number): string | null {
+    if (!this.isAvailable(resource, start, end)) return null;
+    const id = "b" + (++this.seq);
+    this.bookings.set(id, { id, resource, user, start, end });
+    return id;
+  }
+  cancel(id: string): boolean { return this.bookings.delete(id); }
+  listByResource(resource: string): Array<{ id: string; user: string; start: number; end: number }> {
+    return this.forResource(resource)
+      .sort((a, b) => a.start - b.start || a.end - b.end || a.id.localeCompare(b.id))
+      .map((b) => ({ id: b.id, user: b.user, start: b.start, end: b.end }));
+  }
+  listByUser(user: string): string[] {
+    return [...this.bookings.values()].filter((b) => b.user === user).map((b) => b.id);
+  }
+}
+`,
+
+  "backend-scheduler": `
+interface Task { id: string; runAt: number; payload: string; priority: number; intervalMs: number | null; seq: number; }
+class Scheduler {
+  private tasks = new Map<string, Task>();
+  private seq = 0;
+  schedule(id: string, runAt: number, payload: string, priority: number = 0): void {
+    this.tasks.set(id, { id, runAt, payload, priority, intervalMs: null, seq: this.seq++ });
+  }
+  scheduleRecurring(id: string, firstRunAt: number, intervalMs: number, payload: string): void {
+    this.tasks.set(id, { id, runAt: firstRunAt, payload, priority: 0, intervalMs, seq: this.seq++ });
+  }
+  cancel(id: string): boolean { return this.tasks.delete(id); }
+  pending(): number { return this.tasks.size; }
+  getDue(now: number): string[] {
+    const due = [...this.tasks.values()].filter((t) => t.runAt <= now);
+    due.sort((a, b) => a.runAt - b.runAt || b.priority - a.priority || a.seq - b.seq);
+    for (const t of due) {
+      if (t.intervalMs !== null) {
+        let next = t.runAt + t.intervalMs;
+        while (next <= now) next += t.intervalMs;
+        t.runAt = next;
+      } else {
+        this.tasks.delete(t.id);
+      }
+    }
+    return due.map((t) => t.payload);
+  }
+}
+`,
+
+  "backend-session-store": `
+interface Msg { role: string; content: string; tokens: number; }
+class SessionStore {
+  private sessions = new Map<string, { msgs: Msg[]; lastActive: number }>();
+  private idleTtlMs: number;
+  private now: () => number;
+  constructor(options: { idleTtlMs?: number; now?: () => number } = {}) {
+    this.idleTtlMs = options.idleTtlMs ?? Infinity;
+    this.now = options.now ?? (() => Date.now());
+  }
+  private live(session: string): { msgs: Msg[]; lastActive: number } | undefined {
+    const s = this.sessions.get(session);
+    if (!s) return undefined;
+    if (this.now() - s.lastActive >= this.idleTtlMs) { this.sessions.delete(session); return undefined; }
+    return s;
+  }
+  addMessage(session: string, role: string, content: string, tokens: number): void {
+    const existing = this.live(session);
+    if (existing) {
+      existing.msgs.push({ role, content, tokens });
+      existing.lastActive = this.now();
+    } else {
+      this.sessions.set(session, { msgs: [{ role, content, tokens }], lastActive: this.now() });
+    }
+  }
+  getHistory(session: string, maxTokens?: number): Msg[] {
+    const s = this.live(session);
+    if (!s) return [];
+    if (maxTokens === undefined) return s.msgs.map((m) => ({ ...m }));
+    const out: Msg[] = [];
+    let total = 0;
+    for (let i = s.msgs.length - 1; i >= 0; i--) {
+      if (total + s.msgs[i].tokens > maxTokens) break;
+      total += s.msgs[i].tokens;
+      out.push({ ...s.msgs[i] });
+    }
+    out.reverse();
+    return out;
+  }
+  tokenCount(session: string): number {
+    const s = this.live(session);
+    if (!s) return 0;
+    return s.msgs.reduce((t, m) => t + m.tokens, 0);
+  }
+  clear(session: string): boolean { return this.sessions.delete(session); }
+}
+`,
 };
 
 let failures = 0;
