@@ -2543,6 +2543,427 @@ async function __harnessMain(): Promise<void> {
 }
 `,
   },
+  {
+    id: "backend-inmemory-db",
+    track: "backend",
+    type: "coding",
+    title: "In-memory database, level by level (builds in parts)",
+    est: 45,
+    prompt: `Implement a simplified in-memory database, **one level at a time**. This "levels" format is the single most common evolving-backend interview problem (Palantir-style decomposition, and widely reported at FDE-flavored loops). Records are keyed by \`key\`; each record is a set of \`field -> value\` pairs. Get each level running before the next — later levels must not break earlier ones. The clock is injected so TTL is testable.
+
+\`\`\`ts
+class InMemoryDB {
+  constructor(options?: { now?: () => number })
+  set(key: string, field: string, value: string): void
+  get(key: string, field: string): string | null   // null if absent or expired
+  delete(key: string, field: string): boolean       // true iff the field existed (and was live)
+}
+\`\`\`
+
+- **Level 1 — records & fields.** \`set\` / \`get\` / \`delete\` on \`(key, field)\`. Setting an existing field overwrites it.
+- **Level 2 — scan.** \`scan(key)\` returns every live field as \`"field(value)"\`, sorted by field name. \`scanByPrefix(key, prefix)\` returns just the fields whose name starts with \`prefix\`, same format and order. Missing record -> \`[]\`; empty prefix -> all.
+- **Level 3 — TTL.** \`setWithTtl(key, field, value, ttlMs)\` writes a value that expires \`ttlMs\` after it was written (use the injected \`now()\`). Expiry is lazy: \`get\`, \`scan\`, and \`scanByPrefix\` must all skip expired fields. A plain \`set\` on the same field clears any TTL.
+- **Level 4 — aggregate.** \`fieldCount(key)\` returns the number of **live** fields in a record.
+
+Narrate the storage shape (a \`Map\` of records, each a \`Map\` of fields), the half-open TTL boundary, and lazy vs eager expiry. Close on what production would add: a real clock source, background compaction, persistence/snapshots (the classic Level-5 "backup/restore at a timestamp"), and concurrency.`,
+    interviewerNotes: `The canonical "levels" in-memory DB — the highest-signal evolving-backend problem; reveal ONE level at a time and do not advance until the current level runs. Strong: Map<key, Map<field, {value, expiresAt|null}>>; a live(entry) helper comparing this.now(); Level 1 trivial nested maps; Level 2 a shared liveFields(key) that filters expired, sorts by field, formats "field(value)" — scan and scanByPrefix both built on it (reward the reuse); Level 3 setWithTtl sets expiresAt=now()+ttl and plain set sets expiresAt=null (clears TTL), all reads skip expired lazily; Level 4 fieldCount = liveFields length. Reward: extending the entry shape rather than a parallel structure; consistent half-open TTL boundary (expired exactly at now===expiresAt). Probe: overwrite-clears-TTL; delete of an already-expired field (false); empty-prefix = all; why lazy expiry is fine here and when you'd compact; the Level-5 backup/restore extension (snapshot the store keyed by timestamp; restored TTLs are recomputed relative to restore time — a good "how would you..." even if not coded). Red flags: string-concatenated storage; re-sorting/re-filtering duplicated across scan and scanByPrefix; forgetting expiry in scan but not get (or vice-versa). Hint ladder: (a) "what's the shape — one map or nested?" (b) "scan and scanByPrefix share almost everything — what's the one helper?" (c) "a plain set over a TTL'd field — does the old expiry survive?".`,
+    starterCode: `class InMemoryDB {
+  constructor(options: { now?: () => number } = {}) {
+    // TODO: now (default () => Date.now())
+  }
+  // Level 1:
+  set(key: string, field: string, value: string): void {
+    // TODO
+  }
+  get(key: string, field: string): string | null {
+    // TODO
+    return null;
+  }
+  delete(key: string, field: string): boolean {
+    // TODO
+    return false;
+  }
+  // Level 2:
+  scan(key: string): string[] {
+    // TODO
+    return [];
+  }
+  scanByPrefix(key: string, prefix: string): string[] {
+    // TODO
+    return [];
+  }
+  // Level 3:
+  setWithTtl(key: string, field: string, value: string, ttlMs: number): void {
+    // TODO
+  }
+  // Level 4:
+  fieldCount(key: string): number {
+    // TODO
+    return 0;
+  }
+}
+`,
+    starterCodeJs: `class InMemoryDB {
+  constructor(options = {}) {
+    // options.now (default () => Date.now())
+    // TODO
+  }
+  // Level 1:
+  set(key, field, value) {
+    // TODO
+  }
+  get(key, field) {
+    // TODO
+    return null;
+  }
+  delete(key, field) {
+    // TODO
+    return false;
+  }
+  // Level 2:
+  scan(key) {
+    // TODO
+    return [];
+  }
+  scanByPrefix(key, prefix) {
+    // TODO
+    return [];
+  }
+  // Level 3:
+  setWithTtl(key, field, value, ttlMs) {
+    // TODO
+  }
+  // Level 4:
+  fieldCount(key) {
+    // TODO
+    return 0;
+  }
+}
+`,
+    harness: `
+async function __harnessMain(): Promise<void> {
+  let T = 0;
+  const now = () => T;
+
+  // Level 1 — records & fields
+  const db = new InMemoryDB({ now });
+  db.set("user1", "name", "alice");
+  db.set("user1", "age", "30");
+  __check("get field", db.get("user1", "name"), "alice");
+  __check("get missing field", db.get("user1", "email"), null);
+  __check("get missing record", db.get("nope", "x"), null);
+  db.set("user1", "name", "alicia");
+  __check("overwrite field", db.get("user1", "name"), "alicia");
+  __check("delete existing", db.delete("user1", "age"), true);
+  __check("delete missing", db.delete("user1", "age"), false);
+  __check("get after delete", db.get("user1", "age"), null);
+
+  // Level 2 — scan
+  db.set("user1", "city", "nyc");
+  db.set("user1", "country", "us");
+  __check("scan sorted by field", db.scan("user1"), ["city(nyc)", "country(us)", "name(alicia)"]);
+  __check("scanByPrefix", db.scanByPrefix("user1", "co"), ["country(us)"]);
+  __check("scanByPrefix empty = all", db.scanByPrefix("user1", ""), ["city(nyc)", "country(us)", "name(alicia)"]);
+  __check("scanByPrefix no match", db.scanByPrefix("user1", "z"), []);
+  __check("scan missing record", db.scan("ghost"), []);
+
+  // Level 3 — TTL
+  const tdb = new InMemoryDB({ now });
+  T = 0;
+  tdb.setWithTtl("sess", "token", "abc", 100);
+  __check("ttl live before expiry", tdb.get("sess", "token"), "abc");
+  T = 100;
+  __check("ttl expired at boundary", tdb.get("sess", "token"), null);
+
+  const sdb = new InMemoryDB({ now });
+  T = 0;
+  sdb.setWithTtl("s", "a", "1", 50);
+  sdb.set("s", "b", "2"); // permanent
+  T = 50;
+  __check("scan skips expired", sdb.scan("s"), ["b(2)"]);
+  T = 0;
+  sdb.setWithTtl("s", "b", "2", 10); // ttl over an existing field
+  sdb.set("s", "b", "2");            // plain set clears the TTL
+  T = 1000;
+  __check("plain set clears prior TTL", sdb.get("s", "b"), "2");
+
+  // Level 4 — fieldCount
+  const cdb = new InMemoryDB({ now });
+  T = 200;
+  cdb.set("r", "f1", "v");
+  cdb.set("r", "f2", "v");
+  cdb.setWithTtl("r", "f3", "v", 10); // expires at 210
+  __check("fieldCount all live", cdb.fieldCount("r"), 3);
+  T = 210;
+  __check("fieldCount drops expired", cdb.fieldCount("r"), 2);
+  __check("fieldCount missing record", cdb.fieldCount("none"), 0);
+}
+`,
+  },
+  {
+    id: "backend-kv-transactions",
+    track: "backend",
+    type: "coding",
+    title: "Transactional key-value store (builds in parts)",
+    est: 40,
+    prompt: `Build an in-memory key-value store that supports **nested transactions**. This is a heavily-reported FDE-style problem (verified across many companies' loops). Grow it in parts.
+
+\`\`\`ts
+class TransactionalStore {
+  set(key: string, value: string): void
+  get(key: string): string | null   // null if unset
+  unset(key: string): void
+}
+\`\`\`
+
+- **Part 1 — basics + count.** \`set\` / \`get\` / \`unset\`. Then \`count(value): number\` — how many keys currently hold exactly \`value\`. Make \`count\` O(1), not a scan.
+- **Part 2 — transactions.** \`begin()\` opens a transaction; \`rollback()\` undoes every change made since the most recent \`begin\` and returns \`false\` if no transaction is open; \`commit()\` makes all open changes permanent and returns \`false\` if no transaction is open. Reads inside a transaction see its uncommitted writes.
+- **Part 3 — nesting.** \`begin\` inside a transaction opens an inner one; \`rollback\` undoes only the **innermost** open transaction; \`commit\` closes **all** open transactions at once.
+- **Part 4 — count through transactions.** \`count\` must stay correct across begins, sets, unsets, rollbacks, and commits.
+
+Narrate the design: keep the live data plus a **stack of undo logs** (one per open transaction) recording each key's prior value, so \`rollback\` replays in reverse; keep a \`value -> count\` map updated on every write so \`count\` is O(1). Discuss what "commit closes all blocks" means, and what production would add (durability/WAL, isolation levels, real concurrency).`,
+    interviewerNotes: `Classic transactional KV (SET/GET/UNSET/COUNT + BEGIN/ROLLBACK/COMMIT, nested). Reveal parts progressively. Strong: live data Map<string,string> plus counts Map<value,number> maintained by low-level mutators (lowSet/lowUnset adjust both), plus a stack tx: Array<Array<{key, prev|null}>>; every set/unset records the key's prior value into the innermost log BEFORE mutating; rollback pops the innermost log and replays entries in REVERSE via the low-level mutators (no re-logging); commit clears the whole stack (changes already live). get/count read live state directly -> O(1). Reward: O(1) count via the maintained map (not a scan); correct reverse replay; commit-closes-all semantics; rollback/commit return false with no open tx. Probe: nested rollback restores only one level; a set of the same key twice in one tx then rollback restores the pre-tx value (reverse order matters); count correctness after reassigning a key's value inside a tx then rolling back; why you record prev value not just the key. Red flags: count implemented as a scan over all keys; forgetting to update counts on unset; logging during rollback replay (double-undo); commit that only closes the innermost block. Hint ladder: (a) "what do you store so rollback can reverse a write?" (b) "keep count O(1) — what extra map, updated when?" (c) "nested: which log does rollback touch, and in what order does it replay?".`,
+    starterCode: `class TransactionalStore {
+  set(key: string, value: string): void {
+    // TODO
+  }
+  get(key: string): string | null {
+    // TODO
+    return null;
+  }
+  unset(key: string): void {
+    // TODO
+  }
+  // Part 1:
+  count(value: string): number {
+    // TODO
+    return 0;
+  }
+  // Part 2 / 3:
+  begin(): void {
+    // TODO
+  }
+  rollback(): boolean {
+    // TODO
+    return false;
+  }
+  commit(): boolean {
+    // TODO
+    return false;
+  }
+}
+`,
+    starterCodeJs: `class TransactionalStore {
+  set(key, value) {
+    // TODO
+  }
+  get(key) {
+    // TODO
+    return null;
+  }
+  unset(key) {
+    // TODO
+  }
+  // Part 1:
+  count(value) {
+    // TODO
+    return 0;
+  }
+  // Part 2 / 3:
+  begin() {
+    // TODO
+  }
+  rollback() {
+    // TODO
+    return false;
+  }
+  commit() {
+    // TODO
+    return false;
+  }
+}
+`,
+    harness: `
+async function __harnessMain(): Promise<void> {
+  // Part 1 — basics + count
+  const s = new TransactionalStore();
+  __check("get missing", s.get("a"), null);
+  s.set("a", "10");
+  __check("get after set", s.get("a"), "10");
+  __check("count value", s.count("10"), 1);
+  s.set("b", "10");
+  __check("count two", s.count("10"), 2);
+  s.unset("a");
+  __check("get after unset", s.get("a"), null);
+  __check("count after unset", s.count("10"), 1);
+  __check("count absent value", s.count("999"), 0);
+
+  // Part 2 — transactions
+  const t = new TransactionalStore();
+  __check("rollback with no tx", t.rollback(), false);
+  __check("commit with no tx", t.commit(), false);
+  t.set("a", "1");
+  t.begin();
+  t.set("a", "2");
+  __check("value visible in tx", t.get("a"), "2");
+  __check("rollback returns true", t.rollback(), true);
+  __check("value restored on rollback", t.get("a"), "1");
+  t.begin();
+  t.unset("a");
+  __check("unset visible in tx", t.get("a"), null);
+  t.rollback();
+  __check("unset rolled back", t.get("a"), "1");
+
+  // Part 3 — nesting + commit
+  const n = new TransactionalStore();
+  n.begin();
+  n.set("a", "1");
+  n.begin();
+  n.set("a", "2");
+  __check("innermost value visible", n.get("a"), "2");
+  n.rollback();
+  __check("only inner rolled back", n.get("a"), "1");
+  n.begin();
+  n.set("b", "9");
+  __check("commit closes all blocks", n.commit(), true);
+  __check("commit persisted a", n.get("a"), "1");
+  __check("commit persisted b", n.get("b"), "9");
+  __check("no open tx after commit", n.rollback(), false);
+
+  // Part 4 — count across transactions
+  const c = new TransactionalStore();
+  c.set("x", "v");
+  c.set("y", "v");
+  __check("count base", c.count("v"), 2);
+  c.begin();
+  c.set("z", "v");
+  __check("count inside tx", c.count("v"), 3);
+  c.set("x", "other");
+  __check("count after reassign", c.count("v"), 2);
+  c.rollback();
+  __check("count restored after rollback", c.count("v"), 2);
+}
+`,
+  },
+  {
+    id: "backend-file-system",
+    track: "backend",
+    type: "coding",
+    title: "In-memory file system (builds in parts)",
+    est: 40,
+    prompt: `Build an in-memory file system addressed by absolute paths like \`"/a/b/file.txt"\` — the coding shape behind Palantir-style "catalog / log this" decomposition problems. Grow it in parts.
+
+\`\`\`ts
+class FileSystem {
+  writeFile(path: string, content: string): void  // creates missing parent dirs; overwrites
+  readFile(path: string): string | null           // null if the path isn't a file
+  mkdir(path: string): void                        // creates a dir (and missing parents)
+}
+\`\`\`
+
+- **Part 1 — files.** \`writeFile\` (auto-creating intermediate directories), \`readFile\`, and \`mkdir\`.
+- **Part 2 — listing.** \`ls(path)\`: for a directory, the sorted names of its immediate children; for a file, just \`[basename]\`; for a missing path, \`[]\`. \`ls("/")\` lists the root.
+- **Part 3 — delete.** \`delete(path): boolean\` removes a file or a directory (recursively), returning whether it existed. Deleting \`"/"\` returns \`false\`.
+- **Part 4 — search.** \`find(prefix): string[]\` returns the absolute paths of all **files** whose path starts with \`prefix\`, sorted.
+
+Narrate the tree representation (a node with \`isFile\`, \`content\`, and a \`Map\` of children), how you split and walk a path, and the recursion in \`delete\`/\`find\`. Discuss what production would add (a path/prefix index for fast \`find\`, permissions, symlinks, and how this connects to indexing a real repo).`,
+    interviewerNotes: `In-memory file system — hierarchical map-of-maps, evolving. Maps to the reported Palantir "catalog and log X" decomposition flavor as a concrete coding problem, and rhymes with repo-indexing. Reveal parts progressively. Strong: a node {isFile, content, children: Map<string,node>} with a single root; parts(path)=split("/").filter(Boolean); a walk(parts) that returns the node or null; writeFile pops the basename, creates intermediate dirs, sets a file node; readFile null unless the node isFile; ls handles dir (sorted child names), file ([basename]), and missing ([]); delete finds the parent, deletes the child by name, false for root/missing; find DFS-collects file paths then filters by prefix and sorts. Reward: one walk/creation helper reused; correct ls-on-a-file behavior; recursive delete/find. Probe: ls on a file returns the filename (canonical); auto-created parents; delete recursion frees the whole subtree; find at scale (a trie / prefix index instead of a full DFS each call); the connection to indexing a codebase (Merkle/incremental — cross-ref the cursor track). Red flags: flat map of full-path strings that breaks ls/recursive delete; forgetting to auto-create parents; ls returning children of a file. Hint ladder: (a) "what's the node, and what does root look like?" (b) "how do you turn '/a/b/c.txt' into a walk down the tree?" (c) "ls on a file path — what does a real shell return?".`,
+    starterCode: `class FileSystem {
+  // Part 1:
+  writeFile(path: string, content: string): void {
+    // TODO
+  }
+  readFile(path: string): string | null {
+    // TODO
+    return null;
+  }
+  mkdir(path: string): void {
+    // TODO
+  }
+  // Part 2:
+  ls(path: string): string[] {
+    // TODO
+    return [];
+  }
+  // Part 3:
+  delete(path: string): boolean {
+    // TODO
+    return false;
+  }
+  // Part 4:
+  find(prefix: string): string[] {
+    // TODO
+    return [];
+  }
+}
+`,
+    starterCodeJs: `class FileSystem {
+  // Part 1:
+  writeFile(path, content) {
+    // TODO
+  }
+  readFile(path) {
+    // TODO
+    return null;
+  }
+  mkdir(path) {
+    // TODO
+  }
+  // Part 2:
+  ls(path) {
+    // TODO
+    return [];
+  }
+  // Part 3:
+  delete(path) {
+    // TODO
+    return false;
+  }
+  // Part 4:
+  find(prefix) {
+    // TODO
+    return [];
+  }
+}
+`,
+    harness: `
+async function __harnessMain(): Promise<void> {
+  // Part 1 — files
+  const fs = new FileSystem();
+  fs.writeFile("/a/b/file.txt", "hello");
+  __check("read file", fs.readFile("/a/b/file.txt"), "hello");
+  __check("read missing file", fs.readFile("/a/b/none.txt"), null);
+  __check("read a dir is null", fs.readFile("/a/b"), null);
+  fs.writeFile("/a/b/file.txt", "world");
+  __check("overwrite file", fs.readFile("/a/b/file.txt"), "world");
+
+  // Part 2 — listing
+  fs.writeFile("/a/b/second.txt", "x");
+  fs.mkdir("/a/b/sub");
+  __check("ls dir sorted", fs.ls("/a/b"), ["file.txt", "second.txt", "sub"]);
+  __check("ls a file returns basename", fs.ls("/a/b/file.txt"), ["file.txt"]);
+  __check("ls missing path", fs.ls("/nope"), []);
+  __check("ls root", fs.ls("/"), ["a"]);
+
+  // Part 3 — delete
+  __check("delete file", fs.delete("/a/b/second.txt"), true);
+  __check("ls after delete", fs.ls("/a/b"), ["file.txt", "sub"]);
+  __check("delete missing", fs.delete("/a/b/second.txt"), false);
+  __check("delete dir recursively", fs.delete("/a/b"), true);
+  __check("subtree gone after delete", fs.readFile("/a/b/file.txt"), null);
+  __check("cannot delete root", fs.delete("/"), false);
+
+  // Part 4 — search
+  const fs2 = new FileSystem();
+  fs2.writeFile("/src/index.ts", "1");
+  fs2.writeFile("/src/util/x.ts", "2");
+  fs2.writeFile("/README.md", "3");
+  __check("find by prefix", fs2.find("/src"), ["/src/index.ts", "/src/util/x.ts"]);
+  __check("find all files", fs2.find("/"), ["/README.md", "/src/index.ts", "/src/util/x.ts"]);
+  __check("find no match", fs2.find("/zzz"), []);
+}
+`,
+  },
 ];
 
 export const QUESTIONS: Map<string, Question> = new Map(Q.map((q) => [q.id, q]));

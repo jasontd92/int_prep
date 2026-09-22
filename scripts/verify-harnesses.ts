@@ -703,6 +703,165 @@ class SessionStore {
   clear(session: string): boolean { return this.sessions.delete(session); }
 }
 `,
+
+  "backend-inmemory-db": `
+class InMemoryDB {
+  private store = new Map<string, Map<string, { value: string; expiresAt: number | null }>>();
+  private now: () => number;
+  constructor(options: { now?: () => number } = {}) {
+    this.now = options.now ?? (() => Date.now());
+  }
+  private rec(key: string): Map<string, { value: string; expiresAt: number | null }> {
+    let r = this.store.get(key);
+    if (!r) { r = new Map(); this.store.set(key, r); }
+    return r;
+  }
+  private isLive(e: { expiresAt: number | null }): boolean {
+    return e.expiresAt === null || this.now() < e.expiresAt;
+  }
+  set(key: string, field: string, value: string): void {
+    this.rec(key).set(field, { value, expiresAt: null });
+  }
+  setWithTtl(key: string, field: string, value: string, ttlMs: number): void {
+    this.rec(key).set(field, { value, expiresAt: this.now() + ttlMs });
+  }
+  get(key: string, field: string): string | null {
+    const e = this.store.get(key)?.get(field);
+    return e && this.isLive(e) ? e.value : null;
+  }
+  delete(key: string, field: string): boolean {
+    const r = this.store.get(key);
+    const e = r?.get(field);
+    if (!e || !this.isLive(e)) { if (e) r!.delete(field); return false; }
+    r!.delete(field);
+    return true;
+  }
+  private liveFields(key: string): Array<[string, string]> {
+    const r = this.store.get(key);
+    if (!r) return [];
+    const out: Array<[string, string]> = [];
+    for (const [f, e] of r) if (this.isLive(e)) out.push([f, e.value]);
+    out.sort((a, b) => a[0].localeCompare(b[0]));
+    return out;
+  }
+  scan(key: string): string[] {
+    return this.liveFields(key).map(([f, v]) => f + "(" + v + ")");
+  }
+  scanByPrefix(key: string, prefix: string): string[] {
+    return this.liveFields(key).filter(([f]) => f.startsWith(prefix)).map(([f, v]) => f + "(" + v + ")");
+  }
+  fieldCount(key: string): number {
+    return this.liveFields(key).length;
+  }
+}
+`,
+
+  "backend-kv-transactions": `
+class TransactionalStore {
+  private data = new Map<string, string>();
+  private counts = new Map<string, number>();
+  private tx: Array<Array<{ key: string; prev: string | null }>> = [];
+  private lowSet(key: string, value: string): void {
+    const old = this.data.get(key);
+    if (old !== undefined) this.counts.set(old, (this.counts.get(old) ?? 1) - 1);
+    this.data.set(key, value);
+    this.counts.set(value, (this.counts.get(value) ?? 0) + 1);
+  }
+  private lowUnset(key: string): void {
+    const old = this.data.get(key);
+    if (old === undefined) return;
+    this.counts.set(old, (this.counts.get(old) ?? 1) - 1);
+    this.data.delete(key);
+  }
+  private record(key: string): void {
+    if (this.tx.length === 0) return;
+    const prev = this.data.has(key) ? this.data.get(key)! : null;
+    this.tx[this.tx.length - 1].push({ key, prev });
+  }
+  set(key: string, value: string): void { this.record(key); this.lowSet(key, value); }
+  unset(key: string): void { this.record(key); this.lowUnset(key); }
+  get(key: string): string | null { return this.data.has(key) ? this.data.get(key)! : null; }
+  count(value: string): number { return this.counts.get(value) ?? 0; }
+  begin(): void { this.tx.push([]); }
+  rollback(): boolean {
+    const log = this.tx.pop();
+    if (!log) return false;
+    for (let i = log.length - 1; i >= 0; i--) {
+      const { key, prev } = log[i];
+      if (prev === null) this.lowUnset(key);
+      else this.lowSet(key, prev);
+    }
+    return true;
+  }
+  commit(): boolean {
+    if (this.tx.length === 0) return false;
+    this.tx = [];
+    return true;
+  }
+}
+`,
+
+  "backend-file-system": `
+interface FsNode { isFile: boolean; content: string; children: Map<string, FsNode>; }
+class FileSystem {
+  private root: FsNode = { isFile: false, content: "", children: new Map() };
+  private parts(path: string): string[] { return path.split("/").filter((p) => p.length > 0); }
+  private walk(parts: string[]): FsNode | null {
+    let node: FsNode = this.root;
+    for (const p of parts) {
+      const next = node.children.get(p);
+      if (!next) return null;
+      node = next;
+    }
+    return node;
+  }
+  private ensureDir(parts: string[]): FsNode {
+    let node = this.root;
+    for (const p of parts) {
+      let next = node.children.get(p);
+      if (!next) { next = { isFile: false, content: "", children: new Map() }; node.children.set(p, next); }
+      node = next;
+    }
+    return node;
+  }
+  writeFile(path: string, content: string): void {
+    const parts = this.parts(path);
+    const name = parts.pop()!;
+    const dir = this.ensureDir(parts);
+    dir.children.set(name, { isFile: true, content, children: new Map() });
+  }
+  mkdir(path: string): void { this.ensureDir(this.parts(path)); }
+  readFile(path: string): string | null {
+    const node = this.walk(this.parts(path));
+    return node && node.isFile ? node.content : null;
+  }
+  ls(path: string): string[] {
+    const parts = this.parts(path);
+    const node = this.walk(parts);
+    if (!node) return [];
+    if (node.isFile) return [parts[parts.length - 1]];
+    return [...node.children.keys()].sort();
+  }
+  delete(path: string): boolean {
+    const parts = this.parts(path);
+    if (parts.length === 0) return false;
+    const name = parts.pop()!;
+    const parent = this.walk(parts);
+    if (!parent || !parent.children.has(name)) return false;
+    parent.children.delete(name);
+    return true;
+  }
+  find(prefix: string): string[] {
+    const out: string[] = [];
+    const dfs = (node: FsNode, path: string): void => {
+      if (node.isFile) { out.push(path); return; }
+      for (const [name, child] of node.children) dfs(child, path + "/" + name);
+    };
+    dfs(this.root, "");
+    return out.filter((p) => p.startsWith(prefix)).sort();
+  }
+}
+`,
 };
 
 let failures = 0;

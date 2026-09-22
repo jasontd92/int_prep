@@ -11,12 +11,12 @@ npm run arena      # → http://localhost:4321
 
 ## What's in it
 
-**Seven tracks, 45 static questions (+ your own repos).**
+**Seven tracks, 48 static questions (+ your own repos).**
 
 | Track | Questions | Focus |
 |---|---|---|
 | Cursor FDE | 11 | Merkle diff, text buffers, Tab prediction, monorepo indexing, streaming edits, apply models, eval strategy, agent harnesses, context-window economics, inference cost, the work-trial meta-question |
-| Cursor FDE — Stateful Backend | 6 | The **actual 45-min live-coding format**: an in-memory backend that starts simple and grows part by part. TTL+LRU cache, sliding-window rate limiter, metrics aggregator, resource booking, delayed-job scheduler, conversation/session store — maps, lists, queues, and injected clocks. TS + JS starters (JS default). |
+| Cursor FDE — Stateful Backend | 9 | The **actual 45-min live-coding format**: an in-memory backend that starts simple and grows part by part. TTL+LRU cache, sliding-window rate limiter, metrics aggregator, resource booking, delayed-job scheduler, conversation/session store, **the "levels" in-memory database**, **transactional KV store (nested BEGIN/COMMIT/ROLLBACK)**, and an **in-memory file system** — maps, lists, queues, and injected clocks. TS + JS starters (JS default). |
 | OpenAI FDE | 7 | Token-bucket limiter, retry/backoff, cost attribution, enterprise RAG with ACLs, LLM gateway, a "the model got worse" escalation, one-week POC scoping |
 | Classic DS&A | 10 | Two Sum, valid parens, merge intervals, LRU cache, binary-search bounds, sliding window, linked lists, islands, top-K, topological sort |
 | Classic Systems Design | 7 | URL shortener, news feed, chat, notification fan-out, booking (no double-book), distributed KV/cache, distributed rate limiter |
@@ -25,7 +25,9 @@ npm run arena      # → http://localhost:4321
 
 The Cursor set is drawn from [ombharatiya/AI-Engineer-Interview-Questions](https://github.com/ombharatiya/AI-Engineer-Interview-Questions/blob/main/14-company-interview-questions/cursor-anysphere.md) — including the reported work-trial format and the "AI tools allowed, with scoped-query expectations" wrinkle.
 
-The **Stateful Backend** track matches the official Cursor FDE guide most directly: *"live coding on a stateful backend problem … later parts build on earlier ones … requirements will evolve … not finishing every part is expected."* Each prompt is written in incremental parts (v1 → v4); the interviewer reveals them one at a time and rewards **extending** your objects rather than rewriting them. Practice these in JavaScript with constant narration.
+The **Stateful Backend** track matches the official Cursor FDE guide most directly: *"live coding on a stateful backend problem … later parts build on earlier ones … requirements will evolve … not finishing every part is expected."* Each prompt is written in incremental parts (v1 → v4 / Level 1 → 4); the interviewer reveals them one at a time and rewards **extending** your objects rather than rewriting them. Practice these in JavaScript with constant narration.
+
+Working assumption: Cursor's FDE loop follows **Palantir's FDSE playbook** (the coding + problem-**decomposition** rounds, "build a system in parts as requirements evolve"). The last three problems are the *most-reported* evolving-backend formats across FDE-style loops — the **"levels" in-memory database** (reported at Ramp / OpenAI / Anthropic and Palantir-style decomposition rounds), the **transactional KV store** (xAI / Snowflake / Applied Intuition / Rippling), and an **in-memory file system** (the coding shape behind Palantir's "catalog / log X" decomposition prompts). None is a verified *Cursor* question — Cursor's own loop is well protected — so these are pattern-matched to the format the official guide describes, not leaked prompts.
 
 **Two modes.**
 - **Manual** — you write every line. Raw coding signal.
@@ -109,7 +111,7 @@ npm run typecheck   # tsc --noEmit
 npm run build       # bundle the frontend
 ```
 
-`npm run verify` is the guard on question quality: it runs a known-good solution through each harness and asserts all cases pass, then asserts that unmodified starter code *fails* — so a harness can never be silently vacuous. All 25 coding harnesses pass.
+`npm run verify` is the guard on question quality: it runs a known-good solution through each harness and asserts all cases pass, then asserts that unmodified starter code *fails* — so a harness can never be silently vacuous. All 28 coding harnesses pass.
 
 **Adding a question**: append to `Q` in `server/questions.ts` (`prompt` is what the candidate sees, `interviewerNotes` is hidden and shapes the agent's hints, `harness` defines `__harnessMain` using `__check`/`__checkSet`), add a reference solution to `scripts/verify-harnesses.ts`, and run `npm run verify`.
 
