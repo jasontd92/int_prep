@@ -327,10 +327,28 @@ TASK: Respond in character as the interviewer — react to what they said, probe
 THE CANDIDATE JUST SAID TO YOU: "${input.candidateMessage}"
 
 TASK: Respond in character as the interviewer. ${isPortfolio ? "Answer as an interviewer who hasn't seen the code — clarify what you meant, or turn a factual question back to them ('you tell me — how did you handle that?'); probe rather than assert, and never claim to know the implementation." : "Clarify, confirm assumptions, or probe — without giving away the solution."}`;
-    case "final":
-      return isPortfolio
-        ? buildPortfolioFinal(session)
-        : `${header}
+    case "final": {
+      if (isPortfolio) return buildPortfolioFinal(session);
+      // The "backend" track mirrors Cursor's stateful-backend live-coding round,
+      // so it is graded on Cursor's own five published axes rather than the
+      // generic coding rubric.
+      const backend = session.track === "backend";
+      const scoreRows = backend
+        ? `| Problem decomposition | | |
+| Managing state over time | | |
+| Readable, maintainable code | | |
+| Adapting as requirements evolved | | |
+| Communication (narration & tradeoffs) | | |
+`
+        : `| Problem solving | | |
+| ${codeOptional ? "Correctness of approach" : "Code quality & correctness"} | | |
+| Communication & narration | | |
+| Time management | | |
+`;
+      const backendNote = backend
+        ? "\nThis is the Cursor-style stateful-backend round. Grade ONLY the five axes above — problem decomposition, managing state over time, readable/maintainable code, adapting as requirements evolved, and communication (talking through decisions and tradeoffs). NOT finishing every part is EXPECTED: never penalize unfinished later parts — judge how cleanly they built working increments and adapted when requirements changed. Production-readiness (a real clock, compaction, persistence, concurrency) is DISCUSSION-ONLY: credit it if they raised what they'd change for production, but never require code for it, and never dock them for not writing it. Reward clarifying questions and stated assumptions.\n"
+        : "";
+      return `${header}
 The interview is over. TASK: Produce the final debrief in markdown. Structure it exactly as:
 
 # Interview Debrief
@@ -341,14 +359,10 @@ The interview is over. TASK: Produce the final debrief in markdown. Structure it
 ## Scores (1-4: 1=strong no, 2=no, 3=hire, 4=strong hire)
 | Axis | Score | Evidence |
 |---|---|---|
-| Problem solving | | |
-| ${codeOptional ? "Correctness of approach" : "Code quality & correctness"} | | |
-| Communication & narration | | |
-| Time management | | |
-${session.mode === "ai" ? "| AI direction & verification | | |\n" : ""}| Overall signal | | |
+${scoreRows}${session.mode === "ai" ? "| AI direction & verification | | |\n" : ""}| Overall signal | | |
 
 Evidence cells must quote or cite concrete moments from the transcript/code — no generic filler.
-${codeOptional ? "\nThis session's code was OPTIONAL practice — grade on problem-solving approach, correctness of reasoning, and communication, NOT on whether they typed complete, passing code. Treat any code and test results as supporting evidence, and do not penalize incomplete or absent code.\n" : ""}
+${codeOptional ? "\nThis session's code was OPTIONAL practice — grade on problem-solving approach, correctness of reasoning, and communication, NOT on whether they typed complete, passing code. Treat any code and test results as supporting evidence, and do not penalize incomplete or absent code.\n" : ""}${backendNote}
 ## What went well
 ## What to fix (prioritized)
 (concrete, with the specific moment it showed up)
@@ -357,6 +371,7 @@ ${codeOptional ? "\nThis session's code was OPTIONAL practice — grade on probl
 (3-5 targeted practice exercises based on the weaknesses seen)
 
 Be honest and calibrated — a real hiring committee reads this. If the session was too empty to score an axis, say so rather than inventing evidence.`;
+    }
   }
 }
 
